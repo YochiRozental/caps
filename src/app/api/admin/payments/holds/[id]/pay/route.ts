@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { startBookingPayment } from "@/lib/payments/booking-payment";
-import { errorResponse, getFlowProvider, notFound, requireAdminAppointment } from "@/lib/payments/flow";
+import { errorResponse, getFlowProvider, notFound, requireAdminAppointment, withoutProviderInternals } from "@/lib/payments/flow";
 
 /** מנהל פותח תשלום להחזקה שיצר, עבור הלקוח שנבחר. הסכום והחלק מהיתרה מחושבים בשרת, כמו אצל לקוח */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -18,7 +18,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       provider,
       useBalance: body?.useBalance !== false,
     });
-    return NextResponse.json(started);
+    return NextResponse.json(withoutProviderInternals(started, provider));
   } catch (err) {
     return errorResponse(err);
   }

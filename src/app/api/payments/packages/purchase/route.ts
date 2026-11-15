@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { startPackagePurchase } from "@/lib/payments/packages";
-import { errorResponse, getFlowProvider, notFound } from "@/lib/payments/flow";
+import { errorResponse, getFlowProvider, notFound, withoutProviderInternals } from "@/lib/payments/flow";
 
 /**
  * פתיחת רכישת חבילה. נקלטים רק מספר השעות ומפתח אידמפוטנטיות; המחיר נקבע בשרת. החבילה נוצרת רק אחרי שהתשלום
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
 
   try {
     const started = await startPackagePurchase({ userId: session.user.id, hours, clientKey, provider });
-    return NextResponse.json(started);
+    return NextResponse.json(withoutProviderInternals(started, provider));
   } catch (err) {
     return errorResponse(err);
   }

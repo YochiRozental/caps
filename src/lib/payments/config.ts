@@ -1,5 +1,6 @@
 import type { MockStore } from "@/lib/payments/mock-store";
 import { MockPaymentProvider } from "@/lib/payments/mock-provider";
+import { GROW_SANDBOX_BASE_URL, GrowPaymentProvider } from "@/lib/payments/grow-provider";
 import { PaymentConfigError, type PaymentProvider } from "@/lib/payments/provider";
 
 /**
@@ -26,6 +27,14 @@ export interface PaymentEnv {
   PAYMENT_MOCK_TEST_USERS?: string;
   PAYMENT_WEBHOOK_SECRET?: string;
   DATABASE_URL?: string;
+  GROW_USER_ID?: string;
+  GROW_PAGE_CODE?: string;
+  GROW_API_BASE_URL?: string;
+  GROW_SUCCESS_URL?: string;
+  GROW_CANCEL_URL?: string;
+  GROW_NOTIFY_URL?: string;
+  /** חריג מפורש ויחיד שמתיר Grow ב-live. ללא זה, ספק Grow עולה רק בסביבת sandbox (שלב זה: Sandbox בלבד) */
+  GROW_ALLOW_LIVE?: string;
 }
 
 const LOCAL_DB_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -71,9 +80,39 @@ export function getPaymentProvider(
     // באתר מותקן (PAYMENT_MOCK_ALLOW_DEPLOYED) תשלומי דמה מוגבלים למשתמשי בדיקה מורשים; בהדגמה מקומית אין הגבלה
     return new MockPaymentProvider(env.PAYMENT_WEBHOOK_SECRET!, options.mockStore, env.PAYMENT_MOCK_ALLOW_DEPLOYED === "true" ? options.mockCustomerAllowed : undefined);
   }
-  if (kind === "payme") {
-    // מכוון: אין מימוש עד שיכולות ה-API של PAYME יאומתו בתיעוד הרשמי
-    throw new PaymentConfigError("ספק payme עדיין לא ממומש");
+  if (kind === "grow") {
+    return buildGrowProvider(env);
   }
   throw new PaymentConfigError(`ספק תשלומים לא מוכר: ${kind}`);
+}
+
+/**
+ * ספק Grow (Meshulam), שלב Sandbox בלבד. חסימת Production מפורשת (לא נגזרת מ-NODE_ENV): Grow עולה ב-live רק עם
+ * GROW_ALLOW_LIVE=true, ואין היום נתיב שמגדיר אותו - המימוש הנוכחי טרם אומת מול Sandbox אמיתי (ראו דוח ההיתכנות).
+ */
+function buildGrowProvider(env: PaymentEnv): PaymentProvider {
+  const problems: string[] = [];
+  if (!env.GROW_USER_ID) problems.push("GROW_USER_ID חסר");
+  if (!env.GROW_PAGE_CODE) problems.push("GROW_PAGE_CODE חסר");
+  if (!env.GROW_SUCCESS_URL) problems.push("GROW_SUCCESS_URL חסר");
+  if (!env.GROW_CANCEL_URL) problems.push("GROW_CANCEL_URL חסר");
+  if (env.PAYMENT_ENVIRONMENT !== "sandbox" && env.GROW_ALLOW_LIVE !== "true") {
+    problems.push("ספק Grow חסום מחוץ ל-sandbox בשלב זה (PAYMENT_ENVIRONMENT=sandbox, או GROW_ALLOW_LIVE=true לאחר בדיקה מלאה)");
+  }
+  if (env.PAYMENT_ENVIRONMENT !== "sandbox" && !env.GROW_API_BASE_URL) {
+    // כתובת ה-Base ל-Production לא מתועדת כקבוע ידוע; אין ברירת מחדל - חייבים לקבוע אותה במפורש
+    problems.push("GROW_API_BASE_URL חסר (נדרש במפורש מחוץ ל-sandbox)");
+  }
+  if (problems.length > 0) {
+    throw new PaymentConfigError(`ספק Grow חסום: ${problems.join("; ")}`);
+  }
+  return new GrowPaymentProvider({
+    userId: env.GROW_USER_ID!,
+    pageCode: env.GROW_PAGE_CODE!,
+    apiBaseUrl: env.GROW_API_BASE_URL || (env.PAYMENT_ENVIRONMENT === "sandbox" ? GROW_SANDBOX_BASE_URL : ""),
+    environment: env.PAYMENT_ENVIRONMENT === "live" ? "live" : "sandbox",
+    successUrl: env.GROW_SUCCESS_URL!,
+    cancelUrl: env.GROW_CANCEL_URL!,
+    notifyUrl: env.GROW_NOTIFY_URL,
+  });
 }

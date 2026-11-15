@@ -1,6 +1,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type { RoomKey } from "@/generated/prisma/client";
+import type { PaymentProvider } from "@/lib/payments/provider";
 
 // בדיקות אינטגרציה מול PostgreSQL מקומי ייעודי (נפרד ממסד בדיקות המקביליות הקיים, שמוחק את כל ההזמנות).
 // רצות רק כש-PAYMENTS_TEST_DATABASE_URL מוגדר ומצביע על מסד מקומי בשם *_test. דוגמה:
@@ -265,6 +266,36 @@ describe("תשלום על הזמנה והחזקת חדרים: מול PostgreSQL 
     await provider.cancelPayment(started.providerPaymentId);
     assert.equal((await svc.finalizeBookingPayment({ paymentId: started.paymentId, provider })).outcome, "PAYMENT_CANCELLED");
     assert.equal((await apptOf(h.id)).status, "PENDING_PAYMENT");
+  });
+
+  test("ספק שלא יכול לבטל עמוד תשלום פתוח (כמו Grow, בלי API ביטול תהליך): הצלחה מאוחרת אחרי ביטול מקומי לא נבלעת - מוחזרת ולא מאשרת הזמנה שכבר שוחררה", async () => {
+    const { hold: h, started } = await holdAndStart(userA, "ROOM3", 10);
+    await provider.cancelPayment(started.providerPaymentId); // בדיוק כמו תפוגת החזקה: אנחנו מבטלים מקומית
+    // ה-Mock עצמו לא יכול לדמות "הצלחה אחרי ביטול" (הביטול שלו ודאי בכוונה) - עוטפים אותו כדי לדמות ספק אמיתי
+    // (Grow) שבו הלקוח יכול להשלים תשלום בעמוד פתוח גם אחרי שהחזקנו אותו כמבוטל אצלנו.
+    const lateSuccessProvider: PaymentProvider = {
+      name: provider.name,
+      environment: provider.environment,
+      createPaymentRequest: (i) => provider.createPaymentRequest(i),
+      cancelPayment: (id) => provider.cancelPayment(id),
+      refund: (i) => provider.refund(i),
+      chargeSavedMethod: (i) => provider.chargeSavedMethod(i),
+      parseWebhook: (i) => provider.parseWebhook(i),
+      getPaymentStatus: async (id) => ({ ...(await provider.getPaymentStatus(id)), status: "SUCCEEDED" }),
+    };
+
+    const res = await svc.finalizeBookingPayment({ paymentId: started.paymentId, provider: lateSuccessProvider });
+    assert.equal(res.outcome, "LATE_REFUNDED");
+    assert.equal((await payOf(started.paymentId)).status, "SUCCEEDED");
+    assert.equal((await apptOf(h.id)).status, "PENDING_PAYMENT"); // לא אושרה הזמנה שכבר לא בתוקף (ההחזקה פקעה/שוחררה)
+
+    const refunds = await prisma.refund.findMany({ where: { paymentId: started.paymentId } });
+    assert.equal(refunds.length, 1);
+    assert.equal(refunds[0].status, "SUCCEEDED");
+
+    // אימות חוזר אידמפוטנטי: לא מחזיר פעמיים
+    assert.equal((await svc.finalizeBookingPayment({ paymentId: started.paymentId, provider: lateSuccessProvider })).outcome, "LATE_REFUNDED");
+    assert.equal(await prisma.refund.count({ where: { paymentId: started.paymentId } }), 1);
   });
 
   test("תשלום שהגיע אחרי פקיעת ההחזקה: לא מאשר הזמנה, מוחזר במלואו, והחדר פנוי", async () => {

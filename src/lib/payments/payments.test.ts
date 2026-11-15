@@ -224,11 +224,27 @@ test("error messages never leak the secret or the database URL", () => {
   }
 });
 
-test("no provider configured, unknown, and unimplemented payme all refuse", () => {
+test("no provider configured and unknown provider names refuse", () => {
   assert.throws(() => getPaymentProvider({}), PaymentConfigError);
   assert.throws(() => getPaymentProvider({ PAYMENT_PROVIDER: "none" }), PaymentConfigError);
   assert.throws(() => getPaymentProvider({ PAYMENT_PROVIDER: "stripe" }), PaymentConfigError);
-  assert.throws(() => getPaymentProvider({ PAYMENT_PROVIDER: "payme", PAYMENT_ENVIRONMENT: "live" }), /לא ממומש/);
+  // payme היה placeholder זמני ולא ממומש מעולם; הוחלף ב-grow (ראו grow-provider.ts) ואינו שם ספק מוכר יותר
+  assert.throws(() => getPaymentProvider({ PAYMENT_PROVIDER: "payme" }), /לא מוכר/);
+});
+
+test("grow: חסום מחוץ ל-sandbox, ודורש משתני סביבה מפורשים (שלב Sandbox בלבד)", () => {
+  const growEnv = {
+    PAYMENT_PROVIDER: "grow",
+    PAYMENT_ENVIRONMENT: "sandbox",
+    GROW_USER_ID: "biz1",
+    GROW_PAGE_CODE: "page1",
+    GROW_SUCCESS_URL: "https://example.com/success",
+    GROW_CANCEL_URL: "https://example.com/cancel",
+  };
+  assert.equal(getPaymentProvider(growEnv).name, "grow");
+  assert.throws(() => getPaymentProvider({ ...growEnv, PAYMENT_ENVIRONMENT: "live" }), PaymentConfigError, "חסום ב-live בלי GROW_ALLOW_LIVE");
+  assert.throws(() => getPaymentProvider({ ...growEnv, GROW_USER_ID: undefined }), PaymentConfigError);
+  assert.throws(() => getPaymentProvider({ ...growEnv, GROW_SUCCESS_URL: undefined }), PaymentConfigError);
 });
 
 test("PAYMENT_MOCK_ALLOW_DEPLOYED מתיר Mock על שרת מותקן ומסד מרוחק, אך לא מבטל את שאר התנאים", () => {

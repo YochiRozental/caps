@@ -479,7 +479,26 @@ export async function finalizeBookingPayment(params: {
 
   if (!payment.providerPaymentId) return result("PENDING");
   if (payment.status === "FAILED") return result("PAYMENT_FAILED");
-  if (payment.status === "CANCELLED") return result("PAYMENT_CANCELLED");
+  if (payment.status === "CANCELLED") {
+    // ייתכן שהתשלום בוטל אצלנו (למשל תפוגת החזקה של 10 דקות) לפני שהספק אישר שום דבר, אבל אצל ספק שאין לו API
+    // לבטל עמוד תשלום פתוח (כיום Grow) הלקוח יכול להשלים את התשלום בכל זאת, מאוחר יותר. מאמתים מול הספק פעם
+    // נוספת - בדיוק כמו תשלום SUCCEEDED "מאוחר" למטה - ואם אכן הצליח, לא מאשרים הזמנה שכבר שוחררה/נמכרה מחדש
+    // אלא מבטיחים החזר (settledResult). ל-Mock אין לזה השפעה: הביטול שלו תמיד ודאי, אז זו רק קריאת אימות נוספת.
+    const verifiedLate = await provider.getPaymentStatus(payment.providerPaymentId).catch(() => undefined);
+    if (
+      verifiedLate?.providerPaymentId === payment.providerPaymentId &&
+      verifiedLate.status === "SUCCEEDED" &&
+      verifiedLate.amountAgorot === payment.amountAgorot
+    ) {
+      const { count } = await prisma.payment.updateMany({
+        where: { id: payment.id, status: "CANCELLED" },
+        data: { status: "SUCCEEDED", paidAt: now, failureCode: null },
+      });
+      if (count === 1) await audit(payment.id, "status", "ok", "late_success_after_cancel");
+      return settledResult(payment.id, payment.appointment.status, provider, result, "late");
+    }
+    return result("PAYMENT_CANCELLED");
+  }
   if (payment.status === "SUCCEEDED") {
     return settledResult(payment.id, payment.appointment.status, provider, result, "late");
   }

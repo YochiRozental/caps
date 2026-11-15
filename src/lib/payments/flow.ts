@@ -26,6 +26,18 @@ export function notFound() {
   return NextResponse.json({ error: "לא נמצא" }, { status: 404 });
 }
 
+/**
+ * מסנן providerPaymentId מתוצאה שעומדת לחזור ללקוח ב-JSON. אצל ספק אמיתי (כיום Grow) המזהה הזה הוא מידע פנימי בין
+ * השרת שלנו לבין הספק (לדוגמה processId/processToken) שלפי התיעוד שלו אסור לחשוף ללקוח המשלם - בניגוד ל-Mock,
+ * שבו המזהה הסימבולי משמש רק את פאנל הבדיקות (SandboxPanel) ולכן ממשיך להיחשף אצלו בדיוק כמו קודם.
+ */
+export function withoutProviderInternals<T extends { providerPaymentId?: string | null }>(result: T, provider: PaymentProvider): T {
+  if (provider.name === "mock") return result;
+  const { providerPaymentId, ...rest } = result;
+  void providerPaymentId;
+  return rest as T;
+}
+
 type SessionUser = { id: string; role: string };
 
 /** משתמש מחובר שרשאי להזמין: פרטים מלאים ואושר, נבדק מול המסד (כמו ב-POST /api/appointments) */
