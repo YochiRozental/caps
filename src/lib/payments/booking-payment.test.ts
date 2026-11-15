@@ -268,34 +268,46 @@ describe("תשלום על הזמנה והחזקת חדרים: מול PostgreSQL 
     assert.equal((await apptOf(h.id)).status, "PENDING_PAYMENT");
   });
 
-  test("ספק שלא יכול לבטל עמוד תשלום פתוח (כמו Grow, בלי API ביטול תהליך): הצלחה מאוחרת אחרי ביטול מקומי לא נבלעת - מוחזרת ולא מאשרת הזמנה שכבר שוחררה", async () => {
+  test("ספק שלא יכול לבטל עמוד תשלום פתוח (כמו Grow, בלי API ביטול תהליך): הצלחה מאוחרת אחרי שההחזקה פקעה ובוטלה מקומית לא נבלעת - מוחזרת ולא מאשרת הזמנה שכבר שוחררה", async () => {
     const { hold: h, started } = await holdAndStart(userA, "ROOM3", 10);
-    await provider.cancelPayment(started.providerPaymentId); // בדיוק כמו תפוגת החזקה: אנחנו מבטלים מקומית
-    // ה-Mock עצמו לא יכול לדמות "הצלחה אחרי ביטול" (הביטול שלו ודאי בכוונה) - עוטפים אותו כדי לדמות ספק אמיתי
-    // (Grow) שבו הלקוח יכול להשלים תשלום בעמוד פתוח גם אחרי שהחזקנו אותו כמבוטל אצלנו.
+    const afterExpiry = new Date(Date.now() + 11 * MIN);
+
+    // מדמה את הניקוי התקופתי האמיתי של החזקות שפגו (expireStaleHolds): ההזמנה משתחררת (CANCELLED, לא
+    // PENDING_PAYMENT) והתשלום הממתין מבוטל מקומית אצלנו - בלי קשר למה שבאמת קורה בעמוד הפתוח אצל הספק.
+    await svc.expireStaleHolds({ provider, now: afterExpiry });
+    assert.equal((await apptOf(h.id)).status, "CANCELLED");
+    assert.equal((await payOf(started.paymentId)).status, "CANCELLED");
+
+    // ה-Mock עצמו לא יכול לדמות "הצלחה אחרי ביטול" (ה-cancelPayment האמיתי שלו קבע את מצבו הפנימי ל-CANCELLED
+    // סופית, וגם refund מולו ידחה תשלום שאצלו "לא הצליח"). במקום לעוות את מצב ה-Mock, מדמים ספק מינימלי משלנו:
+    // בדיוק כמו Grow, שה-checkout שלו עדיין פתוח ברקע ומדווח בדיעבד שהתשלום בפועל הצליח, וגם ניתן להחזירו.
     const lateSuccessProvider: PaymentProvider = {
       name: provider.name,
       environment: provider.environment,
       createPaymentRequest: (i) => provider.createPaymentRequest(i),
       cancelPayment: (id) => provider.cancelPayment(id),
-      refund: (i) => provider.refund(i),
       chargeSavedMethod: (i) => provider.chargeSavedMethod(i),
       parseWebhook: (i) => provider.parseWebhook(i),
-      getPaymentStatus: async (id) => ({ ...(await provider.getPaymentStatus(id)), status: "SUCCEEDED" }),
+      getPaymentStatus: async (id) => ({ ...(await provider.getPaymentStatus(id)), status: "SUCCEEDED", refundedAgorot: 0 }),
+      refund: async (input) => ({ providerRefundId: `late-success-refund:${input.providerPaymentId}`, status: "SUCCEEDED", amountAgorot: input.amountAgorot ?? 0 }),
     };
 
-    const res = await svc.finalizeBookingPayment({ paymentId: started.paymentId, provider: lateSuccessProvider });
+    const res = await svc.finalizeBookingPayment({ paymentId: started.paymentId, provider: lateSuccessProvider, now: afterExpiry });
     assert.equal(res.outcome, "LATE_REFUNDED");
     assert.equal((await payOf(started.paymentId)).status, "SUCCEEDED");
-    assert.equal((await apptOf(h.id)).status, "PENDING_PAYMENT"); // לא אושרה הזמנה שכבר לא בתוקף (ההחזקה פקעה/שוחררה)
+    assert.equal((await apptOf(h.id)).status, "CANCELLED"); // לא אושרה הזמנה שכבר שוחררה, ולא "נפתחה" שוב
 
     const refunds = await prisma.refund.findMany({ where: { paymentId: started.paymentId } });
     assert.equal(refunds.length, 1);
     assert.equal(refunds[0].status, "SUCCEEDED");
+    assert.equal(refunds[0].amountAgorot, started.amountAgorot);
 
     // אימות חוזר אידמפוטנטי: לא מחזיר פעמיים
-    assert.equal((await svc.finalizeBookingPayment({ paymentId: started.paymentId, provider: lateSuccessProvider })).outcome, "LATE_REFUNDED");
+    assert.equal((await svc.finalizeBookingPayment({ paymentId: started.paymentId, provider: lateSuccessProvider, now: afterExpiry })).outcome, "LATE_REFUNDED");
     assert.equal(await prisma.refund.count({ where: { paymentId: started.paymentId } }), 1);
+
+    // והחדר פנוי למשתמש אחר (ההזמנה אכן שוחררה, לא רק "סומנה" כמבוטלת תוך השארת המשבצת תפוסה)
+    await hold(userB, "ROOM3", 10, { now: afterExpiry });
   });
 
   test("תשלום שהגיע אחרי פקיעת ההחזקה: לא מאשר הזמנה, מוחזר במלואו, והחדר פנוי", async () => {

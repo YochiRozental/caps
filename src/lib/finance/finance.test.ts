@@ -846,9 +846,10 @@ describe(
     });
 
     test("ביטול מוקדם של הזמנה עם חוב סוגר את החוב כנמחל (שומר על אילוצי החוב)", async () => {
-      const date = new Date(Date.now() + 6 * DAY).toISOString().slice(0, 10);
+      // תאריך נבחר ע"י debtBookingInput עצמו (+5 ימים, מדלג דטרמיניסטית על שבת/שישי) - בלי לדרוס אותו כאן
+      // עם תאריך קבוע שעלול ליפול על יום סגור (שבת) ולגרום לדחיית ההזמנה
       const res = await debtBooking.approveBookingWithDebt(
-        debtBookingInput(ids.a, { date, start: "09:00" }),
+        debtBookingInput(ids.a, { start: "09:00" }),
       );
       const cancel = await payBooking.cancelBooking({
         appointmentId: res.appointmentId,
