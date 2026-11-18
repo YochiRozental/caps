@@ -1,10 +1,19 @@
-import NextAuth from "next-auth";
-import { NextResponse } from "next/server";
+import NextAuth, { type NextAuthRequest } from "next-auth";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { authConfig } from "@/auth.config";
+import { GATE_COOKIE_NAME, LOGIN_PAGE_PATH, SERVICE_KEY_HEADER } from "@/lib/staging-gate/config";
+import { decideStagingGate } from "@/lib/staging-gate/evaluate";
+import { safeInternalPath } from "@/lib/safe-path";
 
 const { auth } = NextAuth(authConfig);
 
-export default auth((req) => {
+/** נתיבים שה-middleware המקורי (NextAuth) נועד לרוץ עליהם — ללא שינוי בהתנהגות הקיימת */
+const AUTH_HANDLED_PATHS = [/^\/$/, /^\/booking(\/|$)/, /^\/admin(\/|$)/, /^\/login$/, /^\/register$/, /^\/account-status$/, /^\/complete-profile$/, /^\/change-password$/, /^\/profile$/];
+const isAuthHandledPath = (pathname: string) => AUTH_HANDLED_PATHS.some((re) => re.test(pathname));
+
+// חתימה מפורשת עם שני פרמטרים (ולא פרמטר יחיד), כדי לאלץ TypeScript לבחור את ה-overload של middleware
+// (NextAuthMiddleware) ולא את זה של Route Handler - כדי שאפשר יהיה לקרוא לפונקציה הזו עם NextFetchEvent למטה
+const authMiddleware = auth((req: NextAuthRequest, _event: NextFetchEvent) => {
   const { pathname } = req.nextUrl;
   const isLoggedIn = !!req.auth;
   const isAdmin = req.auth?.user?.role === "ADMIN";
@@ -55,6 +64,36 @@ export default auth((req) => {
   return NextResponse.next();
 });
 
+/**
+ * שער Staging: רץ לפני לוגיקת ההתחברות הרגילה של האתר, על כל נתיב (עמודים ו-API כאחד). כבוי כברירת מחדל -
+ * ראו src/lib/staging-gate/config.ts לתנאים המדויקים להפעלתו. כשהוא לא פעיל (המצב הנוכחי, גם ב-Staging כרגע
+ * וגם תמיד ב-Production) ההתנהגות זהה לחלוטין לקודם.
+ */
+export default async function middleware(req: NextRequest, event: NextFetchEvent) {
+  const { pathname } = req.nextUrl;
+  const decision = await decideStagingGate({
+    hostname: req.nextUrl.hostname,
+    pathname,
+    cookieValue: req.cookies.get(GATE_COOKIE_NAME)?.value,
+    serviceKeyHeader: req.headers.get(SERVICE_KEY_HEADER),
+  });
+
+  if (decision === "denied") {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "אין הרשאה" }, { status: 401 });
+    }
+    const loginUrl = new URL(LOGIN_PAGE_PATH, req.url);
+    loginUrl.searchParams.set("next", safeInternalPath(pathname + req.nextUrl.search, "/"));
+    return NextResponse.redirect(loginUrl);
+  }
+
+  if (isAuthHandledPath(pathname)) {
+    return authMiddleware(req, event);
+  }
+  return NextResponse.next();
+}
+
 export const config = {
-  matcher: ["/", "/booking/:path*", "/admin/:path*", "/login", "/register", "/account-status", "/complete-profile", "/change-password", "/profile"],
+  // כל נתיב חוץ מנכסי Next הפנימיים (קבצי האתר של NextAuth, booking וכו' מסוננים בפנים, לפי isAuthHandledPath)
+  matcher: ["/((?!_next/static|_next/image|favicon\\.ico).*)"],
 };
