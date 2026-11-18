@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { safeInternalPath } from "@/lib/safe-path";
-import { GATE_COOKIE_MAX_AGE_SECONDS, GATE_COOKIE_NAME, isStagingGateActive, LOGIN_PAGE_PATH } from "@/lib/staging-gate/config";
+import {
+  buildStagingUrl,
+  GATE_COOKIE_MAX_AGE_SECONDS,
+  GATE_COOKIE_NAME,
+  isStagingGateActive,
+  LOGIN_PAGE_PATH,
+  type StagingGateEnv,
+} from "@/lib/staging-gate/config";
 import { gateCookieValue, passwordMatches } from "@/lib/staging-gate/token";
 
 /**
@@ -17,15 +24,16 @@ export async function POST(request: Request) {
   const password = String(form.get("password") ?? "");
   const next = safeInternalPath(String(form.get("next") ?? ""), "/");
 
+  const env = process.env as StagingGateEnv;
   const ok = await passwordMatches(password, process.env.STAGING_GATE_PASSWORD);
   if (!ok) {
-    const failUrl = new URL(LOGIN_PAGE_PATH, request.url);
+    const failUrl = buildStagingUrl(LOGIN_PAGE_PATH, env, request.url);
     failUrl.searchParams.set("error", "1");
     failUrl.searchParams.set("next", next);
     return NextResponse.redirect(failUrl, { status: 303 });
   }
 
-  const response = NextResponse.redirect(new URL(next, request.url), { status: 303 });
+  const response = NextResponse.redirect(buildStagingUrl(next, env, request.url), { status: 303 });
   response.cookies.set({
     name: GATE_COOKIE_NAME,
     value: await gateCookieValue(process.env.STAGING_GATE_PASSWORD!),

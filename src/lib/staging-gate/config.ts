@@ -100,3 +100,30 @@ export function isExemptPath(pathname: string): boolean {
   if (pathname === LOGIN_PAGE_PATH || pathname === LOGIN_API_PATH) return true;
   return PUBLIC_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
+
+/**
+ * בונה כתובת-מקור (origin) ציבורית ומהימנה להפניות (redirect) של שער ה-Staging - בלי להתבסס על Host הבקשה
+ * הנכנסת. מאחורי ה-Proxy הפנימי של Render, הבקשה שמגיעה לשרת עצמו (request.url) עשויה לשקף כתובת פנימית
+ * (למשל http://localhost:10000) שהדפדפן של המשתמש לא יכול להגיע אליה בכלל - זו הייתה התקלה בפועל. הפתרון:
+ * כש-RENDER_EXTERNAL_HOSTNAME קיים (מוזרק אוטומטית ע"י Render, אותו משתנה-מהימן ששימש להחלטה אם השער פעיל
+ * ב-isKnownNonProductionHost למעלה - לא שדה סביבה נוסף שצריך להגדיר/לתחזק בנפרד) בונים ממנו את המקור, תמיד
+ * דרך https. בפיתוח מקומי (אין את המשתנה כלל - אין Proxy באמצע) request.url כבר משקף נכון את הכתובת.
+ */
+export function resolveTrustedPublicOrigin(env: StagingGateEnv, requestUrl: string): string {
+  if (env.RENDER_EXTERNAL_HOSTNAME) {
+    return `https://${normalizeHost(env.RENDER_EXTERNAL_HOSTNAME)}`;
+  }
+  return new URL(requestUrl).origin;
+}
+
+/**
+ * בונה כתובת מוחלטת לנתיב פנימי של שער ה-Staging, על בסיס המקור המהימן למעלה. הגנה כפולה מפני Open Redirect:
+ * גם הקוראים אמורים להעביר רק נתיב פנימי שעבר כבר safeInternalPath, וגם כאן - אם בכל זאת הנתיב שהועבר הוא
+ * בעצמו כתובת מוחלטת (כמו "https://evil.com", ש-new URL(path, origin) "בורחת" אליה ומתעלמת מה-origin) -
+ * חוזרים לעמוד ההתחברות הבטוח של השער במקום להפנות לכתובת החיצונית.
+ */
+export function buildStagingUrl(internalPath: string, env: StagingGateEnv, requestUrl: string): URL {
+  const origin = resolveTrustedPublicOrigin(env, requestUrl);
+  const url = new URL(internalPath, origin);
+  return url.origin === origin ? url : new URL(LOGIN_PAGE_PATH, origin);
+}

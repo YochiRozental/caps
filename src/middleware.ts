@@ -1,7 +1,7 @@
 import NextAuth, { type NextAuthRequest } from "next-auth";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { authConfig } from "@/auth.config";
-import { GATE_COOKIE_NAME, LOGIN_PAGE_PATH, SERVICE_KEY_HEADER } from "@/lib/staging-gate/config";
+import { buildStagingUrl, GATE_COOKIE_NAME, LOGIN_PAGE_PATH, SERVICE_KEY_HEADER, type StagingGateEnv } from "@/lib/staging-gate/config";
 import { decideStagingGate } from "@/lib/staging-gate/evaluate";
 import { safeInternalPath } from "@/lib/safe-path";
 
@@ -82,7 +82,7 @@ export default async function middleware(req: NextRequest, event: NextFetchEvent
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "אין הרשאה" }, { status: 401 });
     }
-    const loginUrl = new URL(LOGIN_PAGE_PATH, req.url);
+    const loginUrl = buildStagingUrl(LOGIN_PAGE_PATH, process.env as StagingGateEnv, req.url);
     loginUrl.searchParams.set("next", safeInternalPath(pathname + req.nextUrl.search, "/"));
     return NextResponse.redirect(loginUrl);
   }

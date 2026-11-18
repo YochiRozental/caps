@@ -1,14 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildStagingUrl,
   isExemptPath,
   isKnownNonProductionHost,
   isServiceKeyAllowedPath,
   isStagingGateActive,
   isStagingGateConfigured,
   isValidServiceKey,
+  LOGIN_PAGE_PATH,
   MIN_PASSWORD_LENGTH,
   MIN_SERVICE_KEY_LENGTH,
+  resolveTrustedPublicOrigin,
   SERVICE_KEY_ALLOWED_PATHS,
   type StagingGateEnv,
 } from "@/lib/staging-gate/config";
@@ -108,4 +111,23 @@ test("מפתח שירות מורשה רק לנתיבי API ספציפיים שה
   assert.equal(isServiceKeyAllowedPath("/admin", makePaths), false, "מפתח השירות לא פותח את אזור הניהול");
   assert.equal(isServiceKeyAllowedPath("/", makePaths), false, "מפתח השירות לא פותח עמודי אתר");
   assert.equal(isServiceKeyAllowedPath("/api/payments/other-route", makePaths), false, "לא נתיב API אחר שלא אושר במפורש");
+});
+
+test("תקלת ה-Proxy של Render: גם כש-request.url פנימי (localhost:10000), המקור הציבורי נבנה מ-RENDER_EXTERNAL_HOSTNAME", () => {
+  const internalRequestUrl = "http://localhost:10000/api/staging-gate/login";
+  assert.equal(resolveTrustedPublicOrigin(goodEnv, internalRequestUrl), `https://${STAGING_HOST}`);
+  const url = buildStagingUrl(LOGIN_PAGE_PATH, goodEnv, internalRequestUrl);
+  assert.equal(url.origin, `https://${STAGING_HOST}`, "ההפניה חייבת להצביע על הכתובת הציבורית, לא על localhost:10000");
+  assert.equal(url.pathname, LOGIN_PAGE_PATH);
+});
+
+test("פיתוח מקומי (אין RENDER_EXTERNAL_HOSTNAME): המקור נגזר מ-request.url, כי אין Proxy באמצע", () => {
+  const localEnv: StagingGateEnv = { STAGING_GATE_ENABLED: "true", STAGING_GATE_PASSWORD: "a".repeat(MIN_PASSWORD_LENGTH) };
+  assert.equal(resolveTrustedPublicOrigin(localEnv, "http://localhost:3000/admin"), "http://localhost:3000");
+});
+
+test("buildStagingUrl חסין בפני Open Redirect: נתיב שהוא בעצמו כתובת מוחלטת לא 'בורח' מהמקור המהימן", () => {
+  const url = buildStagingUrl("https://evil-attacker.example/phish", goodEnv, "http://localhost:10000/x");
+  assert.equal(url.origin, `https://${STAGING_HOST}`, "חוזר למקור המהימן, לא לכתובת החיצונית");
+  assert.notEqual(url.hostname, "evil-attacker.example");
 });
