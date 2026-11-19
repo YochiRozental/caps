@@ -13,8 +13,8 @@ const CONTACT_DETAILS: {
   {
     icon: "mail",
     label: "מייל",
-    value: "hakapsula@gmail.com",
-    href: "mailto:hakapsula@gmail.com",
+    value: "info@caps.co.il",
+    href: "mailto:info@caps.co.il",
   },
   { icon: "phone", label: "טלפון", value: "083130541", href: "tel:083130541" },
   {

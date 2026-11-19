@@ -95,7 +95,7 @@ async function sendApprovalCallViaYemot(phone: string, name: string) {
   }
 }
 
-export const CONTACT_EMAIL = "hakapsula@gmail.com";
+export const CONTACT_EMAIL = "info@caps.co.il";
 
 /**
  * מעביר הודעה מטופס "צור קשר" לתיבת המייל של המערכת. Reply-To מוגדר לכתובת הפונה כדי שאפשר יהיה לחזור אליו ישירות.
