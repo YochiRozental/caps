@@ -47,3 +47,9 @@ next-env.d.ts
 
 # סביבת הדגמה מקומית: סודות וסיסמאות אקראיות. לעולם לא נכנסים ל-Git
 /.demo/
+
+# תיקיות skills שנוצרות ע"י כלי סוכנים (עותקים של תיעוד Prisma), לא חלק מהקוד
+/.windsurf/
+/.agents/
+/.claude/skills/
+/skills-lock.json
