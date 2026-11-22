@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { getFlowProvider, notFound } from "@/lib/payments/flow";
 import { isMockAccessRestricted, isMockUserAllowed } from "@/lib/payments/mock-access";
+import { paymentUnavailableProblem, paymentUnavailableResponse } from "@/lib/payments/unavailable";
 import { MockPaymentProvider } from "@/lib/payments/mock-provider";
 
 /**
@@ -13,7 +14,10 @@ import { MockPaymentProvider } from "@/lib/payments/mock-provider";
  */
 export async function GET() {
   const provider = getFlowProvider();
-  if (!provider) return notFound();
+  if (!provider) {
+    const unavailable = paymentUnavailableProblem();
+    return unavailable ? paymentUnavailableResponse(unavailable) : notFound();
+  }
   if (isMockAccessRestricted()) {
     const session = await auth();
     const user = session?.user ? await prisma.user.findUnique({ where: { id: session.user.id }, select: { role: true, email: true } }) : null;

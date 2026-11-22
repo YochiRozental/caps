@@ -92,3 +92,18 @@ test("לא מחובר: 401 לפני כל דבר אחר", async () => {
   session = null;
   assert.equal((await post()).status, 401);
 });
+
+test("ספק make מוגדר אך התצורה שבורה (ספק=null): הזמנה ישירה נחסמת ב-503 PAYMENT_UNAVAILABLE ולא נוצרת (כשל סגור)", async () => {
+  provider = null;
+  process.env.PAYMENT_PROVIDER = "make";
+  const r = await post();
+  assert.equal(r.status, 503);
+  assert.equal(r.body.code, "PAYMENT_UNAVAILABLE");
+  assert.equal(created, 0);
+});
+
+test("בלי ספק מוגדר כלל (none/ריק): ההזמנה הרגילה ממשיכה כרגיל", async () => {
+  provider = null;
+  const r = await post();
+  assert.notEqual(r.status, 503);
+});

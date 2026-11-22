@@ -246,3 +246,14 @@ test("אותה עסקה (transactionId) שמוחזרת לתשלום אחר נד�
   assert.equal((await p.getPaymentStatus(a.providerPaymentId)).status, "SUCCEEDED");
   await assert.rejects(p.getPaymentStatus(b.providerPaymentId), /שויך לתשלום אחר/);
 });
+
+test("getRealProviderConfigProblem: make/grow שבורים מדווחים בעיה (שמות משתנים בלבד); none/mock/ריק - null", async () => {
+  const { getRealProviderConfigProblem } = await import("@/lib/payments/config");
+  const p = getRealProviderConfigProblem({ PAYMENT_PROVIDER: "make", PAYMENT_ENVIRONMENT: "sandbox", MAKE_PAYMENT_API_KEY: "secret-value-that-is-long-enough-1234" });
+  assert.ok(p && /MAKE_PAYMENT_WEBHOOK_URL/.test(p));
+  assert.ok(!p.includes("secret-value"));
+  assert.ok(getRealProviderConfigProblem({ PAYMENT_PROVIDER: "grow" }));
+  assert.equal(getRealProviderConfigProblem({ PAYMENT_PROVIDER: "none" }), null);
+  assert.equal(getRealProviderConfigProblem({ PAYMENT_PROVIDER: "mock" }), null);
+  assert.equal(getRealProviderConfigProblem({}), null);
+});

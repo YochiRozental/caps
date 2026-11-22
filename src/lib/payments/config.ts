@@ -182,3 +182,20 @@ function buildMakeProvider(env: PaymentEnv): PaymentProvider {
     returnBaseUrl: env.MAKE_PAYMENT_RETURN_BASE_URL!,
   });
 }
+
+/**
+ * כשל סגור: אם PAYMENT_PROVIDER מצביע במפורש על ספק אמיתי (make/grow) אבל התצורה שגויה, getRuntimeProvider מחזיר null
+ * והאתר היה מדלג בשקט על התשלום ומאשר הזמנה ישירה. כאן מזהים את המצב הזה כדי לחסום במקום לדלג. מחזיר הודעת בעיה
+ * (שמות משתנים בלבד, בלי ערכים) או null אם אין בעיה/הספק אינו make/grow. Mock ו-none לא מושפעים.
+ */
+export function getRealProviderConfigProblem(env: PaymentEnv = process.env): string | null {
+  const kind = env.PAYMENT_PROVIDER?.trim().toLowerCase();
+  if (kind !== "make" && kind !== "grow") return null;
+  try {
+    getPaymentProvider(env);
+    return null;
+  } catch (err) {
+    if (err instanceof PaymentConfigError) return err.message;
+    throw err;
+  }
+}

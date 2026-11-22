@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isPaymentFlowRequiredFor } from "@/lib/payments/flow";
+import { paymentUnavailableProblem, paymentUnavailableResponse } from "@/lib/payments/unavailable";
 import { auth } from "@/auth";
 import { createAppointment, BookingError } from "@/lib/booking";
 import type { RoomKey } from "@/generated/prisma/client";
@@ -39,6 +40,9 @@ export async function POST(request: Request) {
       { status: 401 },
     );
   }
+  // ספק אמיתי מוגדר אך שבור: חוסמים (כשל סגור) במקום לאשר הזמנה בלי תשלום
+  const unavailable = paymentUnavailableProblem();
+  if (unavailable) return paymentUnavailableResponse(unavailable);
   // כשזרימת התשלום פעילה, הזמנה ישירה בלי החזקה ותשלום חסומה (אחרת אפשר לעקוף את התשלום בקריאת API ישירה)
   if (isPaymentFlowRequiredFor(user)) {
     return NextResponse.json(
