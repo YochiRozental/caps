@@ -2,7 +2,7 @@ import type { MockStore } from "@/lib/payments/mock-store";
 import { MockPaymentProvider } from "@/lib/payments/mock-provider";
 import { GROW_SANDBOX_BASE_URL, GrowPaymentProvider } from "@/lib/payments/grow-provider";
 import { isStagingGateActive } from "@/lib/staging-gate/config";
-import { MAKE_PROVIDER_VERIFICATION_READY, MIN_MAKE_API_KEY_LENGTH, MakeGrowPaymentProvider, isValidAllowedHost, parseAllowedHosts } from "@/lib/payments/make-provider";
+import { MIN_MAKE_API_KEY_LENGTH, isMakeVerificationReady, MakeGrowPaymentProvider, isValidAllowedHost, parseAllowedHosts } from "@/lib/payments/make-provider";
 import { PaymentConfigError, type PaymentProvider } from "@/lib/payments/provider";
 
 /**
@@ -46,6 +46,8 @@ export interface PaymentEnv {
   MAKE_VERIFY_WEBHOOK_URL?: string;
   MAKE_VERIFY_API_KEY?: string;
   MAKE_PAYMENT_RETURN_BASE_URL?: string;
+  /** true רק ב-Staging, אחרי שתרחיש האימות נבדק מול Grow Sandbox. בלי זה ספק Make חסום */
+  MAKE_VERIFICATION_CONFIRMED?: string;
   /** נקראים ע"י שער ה-Staging: ספק Make עולה רק כששער Staging פעיל */
   STAGING_GATE_ENABLED?: string;
   STAGING_GATE_PASSWORD?: string;
@@ -142,7 +144,7 @@ function buildGrowProvider(env: PaymentEnv): PaymentProvider {
  */
 function buildMakeProvider(env: PaymentEnv): PaymentProvider {
   const problems: string[] = [];
-  if (!MAKE_PROVIDER_VERIFICATION_READY) problems.push("אימות עסקאות דרך Make טרם מומש (MAKE_PROVIDER_VERIFICATION_READY=false)");
+  if (!isMakeVerificationReady(env as Record<string, string | undefined>)) problems.push("אימות עסקאות דרך Make טרם אושר (VERIFICATION_READY: יש להגדיר MAKE_VERIFICATION_CONFIRMED=true ב-Staging בלבד, אחרי בדיקת תרחיש האימות)");
   if (env.PAYMENT_ENVIRONMENT !== "sandbox") problems.push("PAYMENT_ENVIRONMENT חייב להיות sandbox");
   let httpsOk = false;
   try {

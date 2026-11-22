@@ -29,6 +29,14 @@ import {
  */
 export const MAKE_PROVIDER_VERIFICATION_READY = false;
 
+/**
+ * הפעלה מפורשת של ספק Make ב-Staging בלבד, אחרי שתרחיש האימות (Get Payment Link Info) נבדק ידנית מול Grow Sandbox.
+ * ברירת מחדל: חסום. הדגל לבדו אינו מספיק: config.ts דורש גם שער Staging פעיל ומארח Staging מוכר, כך שאי אפשר להפעיל ב-Production.
+ */
+export function isMakeVerificationReady(env: Record<string, string | undefined> = process.env): boolean {
+  return MAKE_PROVIDER_VERIFICATION_READY || env.MAKE_VERIFICATION_CONFIRMED === "true";
+}
+
 export const MAKE_API_KEY_HEADER = "x-make-apikey";
 export const MIN_MAKE_API_KEY_LENGTH = 24;
 const DEFAULT_TIMEOUT_MS = 15_000;

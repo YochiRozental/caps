@@ -196,6 +196,12 @@ test("PAYMENT_PROVIDER=make: גם עם כל המשתנים ושער Staging פע
     RENDER_EXTERNAL_HOSTNAME: "caps-staging-ppb1.onrender.com",
   };
   assert.throws(() => getPaymentProvider(staging), (e: Error) => e instanceof PaymentConfigError && /VERIFICATION_READY/.test(e.message) && !/Staging עם שער/.test(e.message));
+  const confirmed = { ...staging, MAKE_VERIFICATION_CONFIRMED: "true" };
+  assert.equal(getPaymentProvider(confirmed).name, "make-grow");
+  assert.throws(() => getPaymentProvider({ ...confirmed, MAKE_VERIFICATION_CONFIRMED: "1" }), /VERIFICATION_READY/);
+  assert.throws(() => getPaymentProvider({ ...confirmed, RENDER_EXTERNAL_HOSTNAME: "caps.co.il" }), /Staging עם שער/);
+  assert.throws(() => getPaymentProvider({ ...confirmed, STAGING_GATE_ENABLED: "false" }), /Staging עם שער/);
+  assert.throws(() => getPaymentProvider({ ...confirmed, PAYMENT_ENVIRONMENT: "live" }), /sandbox/);
   assert.throws(() => getPaymentProvider({ ...staging, RENDER_EXTERNAL_HOSTNAME: "caps.co.il" }), (e: Error) => /Staging עם שער/.test(e.message));
   assert.throws(() => getPaymentProvider({ ...staging, MAKE_VERIFY_API_KEY: "" }), /MAKE_VERIFY_API_KEY/);
   assert.throws(() => getPaymentProvider({ ...staging, MAKE_PAYMENT_RETURN_BASE_URL: "http://x.com" }), /MAKE_PAYMENT_RETURN_BASE_URL/);
