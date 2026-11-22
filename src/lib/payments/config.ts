@@ -1,6 +1,7 @@
 import type { MockStore } from "@/lib/payments/mock-store";
 import { MockPaymentProvider } from "@/lib/payments/mock-provider";
 import { GROW_SANDBOX_BASE_URL, GrowPaymentProvider } from "@/lib/payments/grow-provider";
+import { MAKE_PROVIDER_VERIFICATION_READY, MIN_MAKE_API_KEY_LENGTH, MakeGrowPaymentProvider, isValidAllowedHost, parseAllowedHosts } from "@/lib/payments/make-provider";
 import { PaymentConfigError, type PaymentProvider } from "@/lib/payments/provider";
 
 /**
@@ -35,6 +36,11 @@ export interface PaymentEnv {
   GROW_NOTIFY_URL?: string;
   /** חריג מפורש ויחיד שמתיר Grow ב-live. ללא זה, ספק Grow עולה רק בסביבת sandbox (שלב זה: Sandbox בלבד) */
   GROW_ALLOW_LIVE?: string;
+  /** ספק Make (Make -> Grow Sandbox): כתובת ה-Custom webhook ומפתח x-make-apikey. סודות - לא נרשמים בלוגים */
+  MAKE_PAYMENT_WEBHOOK_URL?: string;
+  MAKE_PAYMENT_API_KEY?: string;
+  /** דומייני checkout מאושרים של Grow (מופרדים בפסיקים). חובה, בלי ברירת מחדל */
+  MAKE_PAYMENT_CHECKOUT_HOSTS?: string;
 }
 
 const LOCAL_DB_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -83,6 +89,9 @@ export function getPaymentProvider(
   if (kind === "grow") {
     return buildGrowProvider(env);
   }
+  if (kind === "make") {
+    return buildMakeProvider(env);
+  }
   throw new PaymentConfigError(`ספק תשלומים לא מוכר: ${kind}`);
 }
 
@@ -114,5 +123,34 @@ function buildGrowProvider(env: PaymentEnv): PaymentProvider {
     successUrl: env.GROW_SUCCESS_URL!,
     cancelUrl: env.GROW_CANCEL_URL!,
     notifyUrl: env.GROW_NOTIFY_URL,
+  });
+}
+
+/**
+ * ספק Make, Sandbox בלבד. חסום תמיד כל עוד MAKE_PROVIDER_VERIFICATION_READY=false: אין עדיין אימות עסקאות אמין
+ * דרך Make, ולכן אסור להפעיל אותו (גם אם כל המשתנים תקינים). ההודעות כוללות שמות משתנים בלבד, לא ערכים.
+ */
+function buildMakeProvider(env: PaymentEnv): PaymentProvider {
+  const problems: string[] = [];
+  if (!MAKE_PROVIDER_VERIFICATION_READY) problems.push("אימות עסקאות דרך Make טרם מומש (MAKE_PROVIDER_VERIFICATION_READY=false)");
+  if (env.PAYMENT_ENVIRONMENT !== "sandbox") problems.push("PAYMENT_ENVIRONMENT חייב להיות sandbox");
+  let httpsOk = false;
+  try {
+    httpsOk = !!env.MAKE_PAYMENT_WEBHOOK_URL && new URL(env.MAKE_PAYMENT_WEBHOOK_URL).protocol === "https:";
+  } catch {
+    httpsOk = false;
+  }
+  if (!httpsOk) problems.push("MAKE_PAYMENT_WEBHOOK_URL חסר או אינו HTTPS");
+  if (!env.MAKE_PAYMENT_API_KEY || env.MAKE_PAYMENT_API_KEY.length < MIN_MAKE_API_KEY_LENGTH) {
+    problems.push(`MAKE_PAYMENT_API_KEY חסר או קצר מ-${MIN_MAKE_API_KEY_LENGTH} תווים`);
+  }
+  const checkoutHosts = parseAllowedHosts(env.MAKE_PAYMENT_CHECKOUT_HOSTS);
+  if (checkoutHosts.length === 0 || !checkoutHosts.every(isValidAllowedHost)) problems.push("MAKE_PAYMENT_CHECKOUT_HOSTS חסר או לא תקין");
+  if (problems.length > 0) throw new PaymentConfigError(`ספק Make חסום: ${problems.join("; ")}`);
+  return new MakeGrowPaymentProvider({
+    webhookUrl: env.MAKE_PAYMENT_WEBHOOK_URL!,
+    apiKey: env.MAKE_PAYMENT_API_KEY!,
+    environment: "sandbox",
+    allowedCheckoutHosts: checkoutHosts,
   });
 }
