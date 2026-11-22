@@ -4,9 +4,11 @@ import { isDiagnosticsAvailable, type DiagEnv } from "@/lib/payments/make-diagno
  * קישור בדיקה קבוע ל-Grow Sandbox (כפתור "תשלום ניסיון ב-Grow" בדף האבחון, Staging בלבד, מנהל בלבד).
  * הקישור נקבע במשתנה סביבה ייעודי וכל מה שהקוד עושה הוא לאמת אותו ולהציג קישור: אין כאן יצירת הזמנה, חבילה,
  * חיוב או רשומת תשלום, ואין שימוש בספקי התשלום. הדומיין המותר הוא דומיין ה-Sandbox של Grow שכבר מוגדר בקוד
- * (GROW_SANDBOX_BASE_URL ב-grow-provider.ts): sandbox.meshulam.co.il ותתי-דומיינים שלו בלבד.
+ * (GROW_SANDBOX_BASE_URL ב-grow-provider.ts): sandbox.meshulam.co.il ותתי-דומיינים שלו, וכן המארח המדויק sandbox.grow.link.
  */
 export const GROW_SANDBOX_CHECKOUT_HOST = "sandbox.meshulam.co.il";
+/** מארח הקישורים שנוצרים בפועל ע"י Grow Sandbox דרך Make (אומת ידנית): התאמה מדויקת בלבד, בלי תתי-דומיינים */
+export const GROW_SANDBOX_LINK_HOST = "sandbox.grow.link";
 
 export interface GrowTestLinkEnv extends DiagEnv {
   GROW_SANDBOX_TEST_CHECKOUT_URL?: string;
@@ -31,8 +33,9 @@ export function validateGrowSandboxCheckoutUrl(value: string): { ok: true; url: 
   if (url.username || url.password) return { ok: false, reason: "הקישור כולל פרטי גישה מוטמעים" };
   if (url.port) return { ok: false, reason: "הקישור כולל פורט לא סטנדרטי" };
   const host = url.hostname.toLowerCase();
-  if (host !== GROW_SANDBOX_CHECKOUT_HOST && !host.endsWith(`.${GROW_SANDBOX_CHECKOUT_HOST}`)) {
-    return { ok: false, reason: `הדומיין אינו ${GROW_SANDBOX_CHECKOUT_HOST}` };
+  const allowed = host === GROW_SANDBOX_LINK_HOST || host === GROW_SANDBOX_CHECKOUT_HOST || host.endsWith(`.${GROW_SANDBOX_CHECKOUT_HOST}`);
+  if (!allowed) {
+    return { ok: false, reason: `הדומיין אינו ${GROW_SANDBOX_LINK_HOST} או ${GROW_SANDBOX_CHECKOUT_HOST}` };
   }
   return { ok: true, url: url.toString() };
 }

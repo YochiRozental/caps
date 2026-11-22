@@ -17,6 +17,27 @@ test("קישור תקין בדומיין ה-Sandbox מתקבל, כולל תת-ד
   assert.equal(validateGrowSandboxCheckoutUrl("https://pay.sandbox.meshulam.co.il/x").ok, true);
 });
 
+test("רגרסיה: המארח המדויק sandbox.grow.link מתקבל, אך לא תתי-דומיינים, דומיינים דומים או grow.link כללי", () => {
+  assert.equal(validateGrowSandboxCheckoutUrl("https://sandbox.grow.link/abc123").ok, true);
+  assert.deepEqual(resolveGrowTestLink(STAGING_HOST, { ...env, GROW_SANDBOX_TEST_CHECKOUT_URL: "https://sandbox.grow.link/abc123" }), { status: "ok", url: "https://sandbox.grow.link/abc123" });
+  for (const bad of [
+    "https://grow.link/abc",
+    "https://pay.sandbox.grow.link/abc",
+    "https://evil.sandbox.grow.link/abc",
+    "https://sandbox.grow.link.evil.com/abc",
+    "https://evilsandbox.grow.link/abc",
+    "https://xsandbox.grow.link/abc",
+    "https://www.grow.link/abc",
+    "https://production.grow.link/abc",
+    "http://sandbox.grow.link/abc",
+    "https://sandbox.grow.link:444/abc",
+    "https://u:p@sandbox.grow.link/abc",
+    "https://evil.example/?x=sandbox.grow.link",
+  ]) {
+    assert.equal(validateGrowSandboxCheckoutUrl(bad).ok, false, bad);
+  }
+});
+
 test("כתובות שרירותיות, דומיין דומה, HTTP, פורט, פרטי גישה וסכמות זרות נדחים", () => {
   for (const bad of [
     "https://evil.example/x",
