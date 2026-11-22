@@ -1,6 +1,7 @@
 import type { MockStore } from "@/lib/payments/mock-store";
 import { MockPaymentProvider } from "@/lib/payments/mock-provider";
 import { GROW_SANDBOX_BASE_URL, GrowPaymentProvider } from "@/lib/payments/grow-provider";
+import { isStagingGateActive } from "@/lib/staging-gate/config";
 import { MAKE_PROVIDER_VERIFICATION_READY, MIN_MAKE_API_KEY_LENGTH, MakeGrowPaymentProvider, isValidAllowedHost, parseAllowedHosts } from "@/lib/payments/make-provider";
 import { PaymentConfigError, type PaymentProvider } from "@/lib/payments/provider";
 
@@ -41,6 +42,15 @@ export interface PaymentEnv {
   MAKE_PAYMENT_API_KEY?: string;
   /** דומייני checkout מאושרים של Grow (מופרדים בפסיקים). חובה, בלי ברירת מחדל */
   MAKE_PAYMENT_CHECKOUT_HOSTS?: string;
+  /** תרחיש האימות (Get Payment Link Info) ובסיס כתובת ההחזרה של האתר (HTTPS) */
+  MAKE_VERIFY_WEBHOOK_URL?: string;
+  MAKE_VERIFY_API_KEY?: string;
+  MAKE_PAYMENT_RETURN_BASE_URL?: string;
+  /** נקראים ע"י שער ה-Staging: ספק Make עולה רק כששער Staging פעיל */
+  STAGING_GATE_ENABLED?: string;
+  STAGING_GATE_PASSWORD?: string;
+  STAGING_GATE_EXTRA_HOSTS?: string;
+  RENDER_EXTERNAL_HOSTNAME?: string;
 }
 
 const LOCAL_DB_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -144,6 +154,20 @@ function buildMakeProvider(env: PaymentEnv): PaymentProvider {
   if (!env.MAKE_PAYMENT_API_KEY || env.MAKE_PAYMENT_API_KEY.length < MIN_MAKE_API_KEY_LENGTH) {
     problems.push(`MAKE_PAYMENT_API_KEY חסר או קצר מ-${MIN_MAKE_API_KEY_LENGTH} תווים`);
   }
+  // ספק Make רק ב-Staging (שער פעיל ומארח Render מוכר כלא-Production): לעולם לא בסביבה חיה
+  if (!isStagingGateActive("", env)) problems.push("ספק Make מותר רק בסביבת Staging עם שער Staging פעיל");
+  const isHttpsUrl = (v: string | undefined) => {
+    try {
+      return !!v && new URL(v).protocol === "https:";
+    } catch {
+      return false;
+    }
+  };
+  if (!isHttpsUrl(env.MAKE_VERIFY_WEBHOOK_URL)) problems.push("MAKE_VERIFY_WEBHOOK_URL חסר או אינו HTTPS");
+  if (!env.MAKE_VERIFY_API_KEY || env.MAKE_VERIFY_API_KEY.length < MIN_MAKE_API_KEY_LENGTH) {
+    problems.push(`MAKE_VERIFY_API_KEY חסר או קצר מ-${MIN_MAKE_API_KEY_LENGTH} תווים`);
+  }
+  if (!isHttpsUrl(env.MAKE_PAYMENT_RETURN_BASE_URL)) problems.push("MAKE_PAYMENT_RETURN_BASE_URL חסר או אינו HTTPS");
   const checkoutHosts = parseAllowedHosts(env.MAKE_PAYMENT_CHECKOUT_HOSTS);
   if (checkoutHosts.length === 0 || !checkoutHosts.every(isValidAllowedHost)) problems.push("MAKE_PAYMENT_CHECKOUT_HOSTS חסר או לא תקין");
   if (problems.length > 0) throw new PaymentConfigError(`ספק Make חסום: ${problems.join("; ")}`);
@@ -152,5 +176,7 @@ function buildMakeProvider(env: PaymentEnv): PaymentProvider {
     apiKey: env.MAKE_PAYMENT_API_KEY!,
     environment: "sandbox",
     allowedCheckoutHosts: checkoutHosts,
+    verify: { webhookUrl: env.MAKE_VERIFY_WEBHOOK_URL!, apiKey: env.MAKE_VERIFY_API_KEY! },
+    returnBaseUrl: env.MAKE_PAYMENT_RETURN_BASE_URL!,
   });
 }

@@ -163,7 +163,7 @@ test("getPaymentStatus לעולם לא מחזיר סטטוס (בפרט לא SUCC
   const { p } = provider(() => ok({ url: "https://pay.grow.example/abc", status: "SUCCEEDED", paid: true }));
   const r = await p.createPaymentRequest(REQ);
   assert.equal(r.status, "PENDING");
-  await assert.rejects(p.getPaymentStatus(r.providerPaymentId), /טרם מומש/);
+  await assert.rejects(p.getPaymentStatus(r.providerPaymentId), /אינו מוגדר/);
 });
 
 test("פעולות שלא נתמכות נכשלות במפורש בלי פנייה לרשת", async () => {

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isPaymentFlowRequiredFor } from "@/lib/payments/flow";
 import { auth } from "@/auth";
 import { createAppointment, BookingError } from "@/lib/booking";
 import type { RoomKey } from "@/generated/prisma/client";
@@ -36,6 +37,13 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { error: "יש להתחבר כדי להזמין קליניקה", code: "AUTH_REQUIRED" },
       { status: 401 },
+    );
+  }
+  // כשזרימת התשלום פעילה, הזמנה ישירה בלי החזקה ותשלום חסומה (אחרת אפשר לעקוף את התשלום בקריאת API ישירה)
+  if (isPaymentFlowRequiredFor(user)) {
+    return NextResponse.json(
+      { error: "ההזמנה מתבצעת דרך מסך התשלום", code: "PAYMENT_REQUIRED" },
+      { status: 409 },
     );
   }
   const missing = getMissingBookingDetails(user);

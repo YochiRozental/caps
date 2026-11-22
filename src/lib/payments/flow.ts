@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getMissingBookingDetails } from "@/lib/profile";
 import { getRuntimeProvider } from "@/lib/payments/runtime";
 import {
+  isMockAccessRestricted,
   isMockUserAllowed,
   MOCK_ACCESS_DENIED_MESSAGE,
 } from "@/lib/payments/mock-access";
@@ -20,6 +21,15 @@ import {
  */
 export function getFlowProvider(): PaymentProvider | null {
   return getRuntimeProvider();
+}
+
+/**
+ * האם המשתמש חייב לעבור את זרימת התשלום (החזקה + תשלום). אותה הכרעה כמו ב-GET /api/payments/status: יש ספק פעיל,
+ * ובאתר מותקן עם Mock - רק למשתמשי בדיקה מורשים. משמש לחסימת הזמנה ישירה (ללא תשלום) כשהזרימה פעילה.
+ */
+export function isPaymentFlowRequiredFor(user: { role: string; email: string | null }): boolean {
+  if (!getFlowProvider()) return false;
+  return !isMockAccessRestricted() || isMockUserAllowed(user);
 }
 
 export function notFound() {

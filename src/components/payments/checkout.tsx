@@ -216,6 +216,13 @@ export function Checkout({ appointmentId }: { appointmentId: string }) {
           tone: "error",
           text: res.data.error ?? "לא ניתן לפתוח תשלום",
         });
+      // ספק אמיתי (Grow דרך Make): מעבר אוטומטי לדף התשלום האישי. הכתובת נבדקה בשרת מול דומיין מאושר, ובכל זאת
+      // מעבירים רק HTTPS. החזרה מהדף אינה אישור: ההזמנה מאושרת רק אחרי אימות בשרת (האימות התקופתי למטה)
+      const url = (res.data as { checkoutUrl?: string }).checkoutUrl;
+      if (res.ok && typeof url === "string" && url.startsWith("https://")) {
+        window.location.assign(url);
+        return;
+      }
       await load();
     });
   }
@@ -477,6 +484,15 @@ export function Checkout({ appointmentId }: { appointmentId: string }) {
               providerPaymentId={pending.providerPaymentId}
               onDone={() => void verifyPayment(pending.id)}
             />
+          )}
+          {!gate.sandbox && (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void pay(pending.packageMinutes > 0)}
+            >
+              מעבר לדף התשלום
+            </button>
           )}
           <button
             type="button"
