@@ -3,23 +3,20 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
 import {
-  digitsOnly,
   findIdentityConflict,
   normalizeIdNumber,
   normalizePhone,
   profileFieldSchemas as fields,
 } from "@/lib/profile";
 
-// כל שדות ההרשמה הם שדות חובה.
+// כל שדות ההרשמה הם שדות חובה. פרטי אשראי אינם חלק מההרשמה — יוזנו בהשלמת פרטים להזמנה.
+// שדות כרטיס שנשלחים בידי לקוח ישן נזרקים ע"י הסכמה ולא נשמרים.
 const registerSchema = z.object({
   firstName: fields.firstName,
   lastName: fields.lastName,
   email: z.string().trim().email("כתובת אימייל לא תקינה"),
   phone: fields.phone,
   idNumber: fields.idNumber,
-  cardNumber: fields.cardNumber,
-  cardExpiry: z.string().trim().min(1, "יש להזין תוקף כרטיס").pipe(fields.cardExpiry),
-  cardCvv: fields.cardCvv,
   password: z.string().min(4, "הסיסמה חייבת להכיל לפחות 4 תווים"),
 });
 
@@ -34,9 +31,7 @@ export async function POST(request: Request) {
     );
   }
 
-  // מספר הכרטיס המלא וה-CVV לא נשמרים — שמירתם אסורה לפי תקן PCI DSS.
-  // נשמרות רק 4 הספרות האחרונות והתוקף, לצורך זיהוי הכרטיס.
-  const { firstName, lastName, email, phone, idNumber, cardNumber, cardExpiry, password } = parsed.data;
+  const { firstName, lastName, email, phone, idNumber, password } = parsed.data;
   const normalizedEmail = email.toLowerCase();
   const normalizedPhone = normalizePhone(phone);
   const normalizedId = normalizeIdNumber(idNumber);
@@ -62,8 +57,6 @@ export async function POST(request: Request) {
         email: normalizedEmail,
         phone: normalizedPhone,
         idNumber: normalizedId,
-        cardLast4: digitsOnly(cardNumber).slice(-4),
-        cardExpiry,
         passwordHash,
       },
     });
