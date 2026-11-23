@@ -709,6 +709,13 @@ function EligibilityTab({ rows, query, setQuery, onChanged, tell }: { rows: Elig
   const { busy, run } = useSingleFlight();
   const [draft, setDraft] = useState(query);
 
+  // חיפוש אוטומטי תוך כדי הקלדה (עם השהיה קצרה)
+  useEffect(() => {
+    if (draft === query) return;
+    const t = setTimeout(() => setQuery(draft), 300);
+    return () => clearTimeout(t);
+  }, [draft, query, setQuery]);
+
   async function toggle(row: EligibilityRow) {
     await run(async () => {
       const res = await api("/api/admin/shifts/eligibility", { method: "PATCH", body: { userId: row.id, allowed: !row.canBookShifts } });
