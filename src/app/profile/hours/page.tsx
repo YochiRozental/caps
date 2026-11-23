@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui";
 import { HoursCenter } from "@/components/payments/hours-center";
 import { getFlowProvider } from "@/lib/payments/flow";
+import { isPackagePingAvailable } from "@/lib/payments/make-diagnostics";
 import { packageSavingsAgorot } from "@/lib/payments/pricing";
 import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
 
@@ -15,7 +16,8 @@ import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-d
 export const dynamic = "force-dynamic";
 
 export default async function HoursPage() {
-  if (!getFlowProvider()) notFound();
+  // בדיקת התקשורת ל-Make (Staging בלבד) פותחת את העמוד גם בלי ספק תשלום פעיל. ב-Render ההכרעה לפי RENDER_EXTERNAL_HOSTNAME
+  if (!getFlowProvider() && !isPackagePingAvailable("")) notFound();
   const session = await auth();
   if (!session?.user) redirect("/login?callbackUrl=/profile/hours");
   if (session.user.role === "ADMIN") redirect("/admin");

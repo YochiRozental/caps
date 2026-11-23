@@ -351,13 +351,19 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
     await run(async () => {
       setError(null);
       setMessage(null);
-      const res = await api<{ paymentId: string; providerPaymentId?: string; hours: number; amountAgorot: number }>(
+      const res = await api<{ paymentId: string; providerPaymentId?: string; hours: number; amountAgorot: number; communicationTest?: boolean; outcome?: string }>(
         "/api/payments/packages/purchase",
         // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת
         { body: { hours, clientKey: key } }
       );
       if (!res.ok) {
         setError(res.data.error ?? "לא ניתן להתחיל את הרכישה");
+        return;
+      }
+      // בדיקת תקשורת ל-Make (Staging בלבד): לא נוצר תשלום, אין מה לשמור או לאמת
+      if (res.data.communicationTest) {
+        setConfirming(null);
+        setMessage({ tone: "warn", text: `בדיקת תקשורת: הבקשה נשלחה ל-Make (${res.data.outcome ?? "לא ידוע"}). לא נוצר תשלום ולא נוספה יתרה.` });
         return;
       }
       const p: Purchase = {
