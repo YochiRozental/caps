@@ -4,7 +4,7 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
-import { Alert, AuthShell, Icon, SectionTitle } from "@/components/ui";
+import { Alert, AuthShell } from "@/components/ui";
 import { safeInternalPath } from "@/lib/safe-path";
 
 const EMPTY_FORM = {
@@ -13,22 +13,8 @@ const EMPTY_FORM = {
   email: "",
   phone: "",
   idNumber: "",
-  cardNumber: "",
-  cardExpiry: "",
-  cardCvv: "",
   password: "",
 };
-
-/** מקבץ את מספר הכרטיס לרביעיות: 1234 5678 9012 3456 */
-function formatCardNumber(value: string) {
-  return value.replace(/\D/g, "").slice(0, 19).replace(/(\d{4})(?=\d)/g, "$1 ");
-}
-
-/** מוסיף לוכסן אוטומטית לתוקף: MM/YY */
-function formatExpiry(value: string) {
-  const digits = value.replace(/\D/g, "").slice(0, 4);
-  return digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
-}
 
 function RegisterForm() {
   const router = useRouter();
@@ -80,7 +66,6 @@ function RegisterForm() {
   return (
     <AuthShell title="הרשמה למערכת" subtitle="שדות המסומנים בכוכבית (*) הם שדות חובה">
       <form onSubmit={handleSubmit} className="space-y-5">
-        <SectionTitle index="1">פרטים אישיים</SectionTitle>
         <div className="grid sm:grid-cols-2 gap-5">
           <div>
             <label htmlFor="reg-first-name" className="field-label">שם פרטי *</label>
@@ -162,69 +147,6 @@ function RegisterForm() {
             className="field"
           />
           <p className="text-xs text-stone-400 mt-1.5">לפחות 4 תווים</p>
-        </div>
-
-        <div className="hairline-bronze" />
-
-        <SectionTitle index="2" hint="מספר הכרטיס המלא וה-CVV אינם נשמרים במערכת">
-          פרטי אשראי
-        </SectionTitle>
-        <div>
-          <label htmlFor="reg-card-number" className="field-label">מספר כרטיס אשראי *</label>
-          <div className="relative">
-            <input
-              id="reg-card-number"
-              required
-              inputMode="numeric"
-              dir="ltr"
-              autoComplete="cc-number"
-              placeholder="0000 0000 0000 0000"
-              value={form.cardNumber}
-              onChange={(e) => setForm({ ...form, cardNumber: formatCardNumber(e.target.value) })}
-              className="field text-right tabular-nums ps-10"
-            />
-            <Icon
-              name="card"
-              className="w-5 h-5 text-stone-400 absolute start-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-5">
-          <div>
-            <label htmlFor="reg-card-expiry" className="field-label">תוקף *</label>
-            <input
-              id="reg-card-expiry"
-              required
-              inputMode="numeric"
-              dir="ltr"
-              autoComplete="cc-exp"
-              placeholder="MM/YY"
-              pattern="\d{2}/\d{2}"
-              title="תוקף בפורמט MM/YY"
-              value={form.cardExpiry}
-              onChange={(e) => setForm({ ...form, cardExpiry: formatExpiry(e.target.value) })}
-              className="field text-right tabular-nums"
-            />
-          </div>
-          <div>
-            <label htmlFor="reg-card-cvv" className="field-label">
-              CVV * <span className="font-normal text-stone-400">(3 ספרות בגב הכרטיס)</span>
-            </label>
-            <input
-              id="reg-card-cvv"
-              required
-              type="password"
-              inputMode="numeric"
-              dir="ltr"
-              autoComplete="cc-csc"
-              maxLength={3}
-              pattern="\d{3}"
-              title="3 ספרות"
-              value={form.cardCvv}
-              onChange={(e) => setForm({ ...form, cardCvv: e.target.value.replace(/\D/g, "") })}
-              className="field text-right tabular-nums"
-            />
-          </div>
         </div>
 
         {error && <Alert tone="error">{error}</Alert>}

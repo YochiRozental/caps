@@ -44,10 +44,40 @@ const VALID_REGISTRATION = {
   password: "1234",
   phone: "0501110001",
   idNumber: "123456782", // ת"ז תקינה (ספרת ביקורת תואמת)
-  cardNumber: "4580458045804580", // עובר בדיקת Luhn
-  cardExpiry: "12/99",
-  cardCvv: "123",
 };
+
+test("הרשמה מצליחה בלי פרטי אשראי, ואינה שומרת ערך עבורם", async () => {
+  const stub = stubPrisma();
+  try {
+    const res = await POST(registerRequest({ ...VALID_REGISTRATION, email: "no-card@test.local" }));
+    assert.equal(res.status, 201);
+    assert.equal(stub.created.length, 1);
+    assert.equal("cardLast4" in stub.created[0], false);
+    assert.equal("cardExpiry" in stub.created[0], false);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("פרטי אשראי שנשלחו בידי לקוח ישן מתעלמים ולא נשמרים", async () => {
+  const stub = stubPrisma();
+  try {
+    const res = await POST(
+      registerRequest({
+        ...VALID_REGISTRATION,
+        email: "legacy-card@test.local",
+        cardNumber: "4580458045804580",
+        cardExpiry: "12/99",
+        cardCvv: "123",
+      })
+    );
+    assert.equal(res.status, 201);
+    assert.equal("cardLast4" in stub.created[0], false);
+    assert.equal("cardExpiry" in stub.created[0], false);
+  } finally {
+    stub.restore();
+  }
+});
 
 test("הרשמה מצליחה בלי מגדר, ואינה שומרת ערך עבורו", async () => {
   const stub = stubPrisma();
