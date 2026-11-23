@@ -34,7 +34,18 @@ export function HoursCenter({ canPurchase, packages }: { canPurchase: boolean; p
   const gate = usePaymentsGate();
   const [tab, setTab] = useState<Tab>("balance");
   const [balanceVersion, setBalanceVersion] = useState(0);
-  const bump = () => setBalanceVersion((v) => v + 1);
+  const bump = useCallback(() => setBalanceVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    try {
+      if (window.sessionStorage.getItem(PURCHASE_STORAGE)) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- הבחירה תלויה ברכישה שנשמרה בדפדפן לפני המעבר לתשלום
+        setTab("buy");
+      }
+    } catch {
+      // האחסון עשוי להיות חסום בדפדפן
+    }
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -351,7 +362,7 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
     await run(async () => {
       setError(null);
       setMessage(null);
-      const res = await api<{ paymentId: string; providerPaymentId?: string; hours: number; amountAgorot: number; communicationTest?: boolean; outcome?: string }>(
+      const res = await api<Purchase & { checkoutUrl?: string; communicationTest?: boolean; outcome?: string }>(
         "/api/payments/packages/purchase",
         // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת
         { body: { hours, clientKey: key } }
@@ -375,6 +386,10 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
       window.sessionStorage.setItem(PURCHASE_STORAGE, JSON.stringify(p));
       setConfirming(null);
       setPurchase(p);
+      if (typeof res.data.checkoutUrl === "string" && res.data.checkoutUrl.startsWith("https://")) {
+        window.location.assign(res.data.checkoutUrl);
+        return;
+      }
       void verify(p);
     });
   }
