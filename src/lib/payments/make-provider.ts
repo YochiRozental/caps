@@ -421,8 +421,18 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
 
     const body = flattenGrowNotifyBody(input.rawBody);
     if (body.cField1 && body.cField1 !== ref) throw new WebhookVerificationError("ההתראה מתייחסת לתשלום אחר (cField1)");
+    // עסקה שכבר שויכה (באימות קודם) לרכישה אחרת לא יכולה לשמש התראה לרכישה הזו
+    if (body.transactionId) {
+      const owner = await this.store.get<{ paymentId: string }>(`make-tx:${body.transactionId}`);
+      if (owner && owner.paymentId !== ref) throw new WebhookVerificationError("העסקה בהתראה כבר שויכה לרכישה אחרת");
+    }
+    // processId בגוף ההתראה אינו חתום (Grow לא חותם התראות) ולכן אינו ראיה לשום כיוון. ב-Staging נמצא שהוא שונה
+    // מה-processId שנשמר ביצירת הקישור, וחסימה לפיו מנעה הפעלה. לא חוסמים: מתעדים (מזהים בלבד, בלי טוקנים) וממשיכים
+    // לאימות העצמאי מול Grow דרך Make לפי המזהים השמורים בשרת - הוא היחיד שמחליט, עם השוואת סכום, מטבע ועסקה
     if (body.processId && record.processId && body.processId !== record.processId) {
-      throw new WebhookVerificationError("ההתראה מתייחסת לתהליך תשלום אחר (processId)");
+      console.warn(
+        `[payments] notify processId differs ref=${ref} stored=${record.processId} notify=${body.processId.slice(0, 32)} tx=${body.transactionId ? "present" : "absent"} fields=${Object.keys(body).sort().join(",").slice(0, 400)}`
+      );
     }
     await this.approveBestEffort(ref, body);
     return { eventId: `notify:${ref}:${randomUUID()}`, type: "payment.updated", providerPaymentId: ref };

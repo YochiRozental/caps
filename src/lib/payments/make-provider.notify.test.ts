@@ -121,15 +121,66 @@ test("התראה בלי חתימה, עם חתימה שגויה, לתשלום א�
   }
 });
 
-test("גוף התראה שמצביע על תשלום או תהליך אחר נדחה גם כשהחתימה תקינה", async () => {
+test("גוף התראה שמצביע על רכישה אחרת (cField1) נדחה גם כשהחתימה תקינה", async () => {
   const { p, calls } = setup();
   await p.createPaymentRequest(PKG_REQ);
   const query = queryOf(calls[0].body.notifyUrl);
   await assert.rejects(p.parseWebhook({ rawBody: "data[customFields][cField1]=make:" + "1".repeat(32), headers: {}, query }), WebhookVerificationError);
-  await assert.rejects(p.parseWebhook({ rawBody: JSON.stringify({ data: { processId: "999" } }), headers: {}, query }), WebhookVerificationError);
   // התאמה מלאה מתקבלת
   const ev = await p.parseWebhook({ rawBody: `data[processId]=777&data[customFields][cField1]=${query.ref}`, headers: {}, query });
   assert.equal(ev.providerPaymentId, query.ref);
+});
+
+test("processId שונה בגוף ההתראה (כפי שנמצא ב-Staging) אינו חוסם: ההתראה מובילה לאימות לפי המזהים השמורים בשרת", async () => {
+  const { p, calls } = setup();
+  const r = await p.createPaymentRequest(PKG_REQ);
+  const query = queryOf(calls[0].body.notifyUrl);
+  const warn = console.warn;
+  const logged: string[] = [];
+  console.warn = (msg: string) => void logged.push(msg);
+  try {
+    const ev = await p.parseWebhook({ rawBody: JSON.stringify({ data: { processId: "999", transactionId: "TX9" } }), headers: {}, query });
+    assert.equal(ev.providerPaymentId, r.providerPaymentId);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /stored=777 notify=999/);
+  assert.ok(!logged[0].includes("T1"), "הטוקן השמור לא נרשם בלוג");
+  // האימות שאחרי ההתראה פונה לתרחיש האימות עם המזהים השמורים (777), לא עם מה שהגיע בגוף ההתראה
+  const v = await p.getPaymentStatus(r.providerPaymentId);
+  assert.equal(v.status, "SUCCEEDED");
+  const verifyCall = calls.find((c) => c.url === VERIFY_HOOK);
+  assert.equal(verifyCall?.body.processId, "777");
+  assert.equal(verifyCall?.body.processToken, "T1");
+});
+
+test("התראה עם עסקה שכבר שויכה לרכישה אחרת נדחית", async () => {
+  // רכישה ראשונה מאומתת ומשייכת את עסקה TX9 לעצמה
+  const first = setup();
+  const r1 = await first.p.createPaymentRequest(PKG_REQ);
+  assert.equal((await first.p.getPaymentStatus(r1.providerPaymentId)).status, "SUCCEEDED");
+  // רכישה שנייה באותו אחסון מקבלת התראה שמצביעה על אותה עסקה
+  const sent: { body: Record<string, string> }[] = [];
+  const secondWithCapture = new MakeGrowPaymentProvider({
+    webhookUrl: HOOK,
+    apiKey: API_KEY,
+    environment: "sandbox",
+    allowedCheckoutHosts: ["grow.example"],
+    returnBaseUrl: BASE,
+    db,
+    store: first.store,
+    fetchImpl: (async (_u: string | URL, init?: RequestInit) => {
+      sent.push({ body: JSON.parse(String(init?.body)) });
+      return ok({ url: "https://pay.grow.example/xyz", processId: "888", processToken: "T2" });
+    }) as unknown as typeof fetch,
+  });
+  await secondWithCapture.createPaymentRequest({ ...PKG_REQ, idempotencyKey: "package:u1:second00" });
+  const q2 = queryOf(sent[0].body.notifyUrl);
+  await assert.rejects(secondWithCapture.parseWebhook({ rawBody: "data[transactionId]=TX9", headers: {}, query: q2 }), WebhookVerificationError);
+  // עסקה חדשה (שלא שויכה) מתקבלת כטריגר רגיל
+  const ok2 = await secondWithCapture.parseWebhook({ rawBody: "data[transactionId]=TX10", headers: {}, query: q2 });
+  assert.equal(ok2.providerPaymentId, q2.ref);
 });
 
 test("פענוח גוף ההתראה: JSON, טופס שטוח וטופס בסגנון data[...]", () => {
