@@ -18,6 +18,7 @@ import type { BalanceView, HistoryEntry, PackageView } from "@/lib/payments/view
 import { SecureCheckoutModal, type CheckoutPhase } from "@/components/payments/secure-checkout-modal";
 import {
   canReopenCheckout,
+  checkoutPhaseFor,
   isEmbeddableCheckoutUrl,
   parseStoredPurchase,
   pendingPackagePaymentIds,
@@ -435,6 +436,7 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
         checkoutUrl?: string;
         communicationTest?: boolean;
         outcome?: string;
+        checkoutEmbeddable?: boolean;
       }>(
         "/api/payments/packages/purchase",
         // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת. אותו מפתח בלחיצה חוזרת = אותה עסקה
@@ -459,11 +461,12 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
         hours: res.data.hours,
         amountAgorot: res.data.amountAgorot,
         ...(embeddable ? { checkoutUrl, checkoutCreatedAt: Date.now() } : {}),
+        ...(embeddable && res.data.checkoutEmbeddable === false ? { embeddable: false } : {}),
       };
       savePurchase(p);
       setPurchase(p);
       if (embeddable) {
-        setPhase("checkout");
+        setPhase(checkoutPhaseFor(p.embeddable));
         return;
       }
       // ספק ללא דף תשלום (Mock מקומי): החלונית נסגרת והמצב מוצג בכרטיס הרכישה הממתינה
@@ -491,7 +494,7 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
     setError(null);
     setReturnHint("unknown");
     setOffer({ hours: purchase.hours, priceAgorot: purchase.amountAgorot, key: "" });
-    setPhase("checkout");
+    setPhase(checkoutPhaseFor(purchase.embeddable));
   }
 
   /** ביטול מעקב מקומי בלבד, אחרי שהשרת אישר שהתשלום עדיין לא הושלם. אם ישולם בהמשך - ישוחזר מההיסטוריה ויופעל */

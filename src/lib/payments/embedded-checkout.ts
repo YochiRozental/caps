@@ -74,6 +74,11 @@ export function isEmbeddableCheckoutUrl(value: unknown): value is string {
   }
 }
 
+/** שלב החלונית אחרי שהקישור מוכן: iframe רק כשלא ידוע שהספק אוסר הטמעה */
+export function checkoutPhaseFor(embeddable: boolean | undefined): "checkout" | "external-ready" {
+  return embeddable === false ? "external-ready" : "checkout";
+}
+
 // ───────────────────────────── רכישה ממתינה (sessionStorage) ─────────────────────────────
 
 export interface StoredPurchase {
@@ -85,6 +90,8 @@ export interface StoredPurchase {
   checkoutUrl?: string;
   /** מתי נוצר הקישור (ms). משמש רק כדי לא להציע קישור שפג */
   checkoutCreatedAt?: number;
+  /** false = הספק אוסר הטמעה (נבדק בשרת לפי כותרות האבטחה שלו): הדף ייפתח בחלון נפרד */
+  embeddable?: boolean;
 }
 
 const PAYMENT_ID = /^[A-Za-z0-9_-]{8,64}$/;
@@ -106,6 +113,7 @@ export function parseStoredPurchase(raw: string | null): StoredPurchase | null {
     out.checkoutUrl = v.checkoutUrl;
     out.checkoutCreatedAt = v.checkoutCreatedAt;
   }
+  if (v.embeddable === false) out.embeddable = false;
   return out;
 }
 

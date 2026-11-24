@@ -19,6 +19,8 @@ export type CheckoutPhase =
   | "creating"
   /** דף Grow מוצג ב-iframe */
   | "checkout"
+  /** הספק אוסר הטמעה: מציעים לפתוח את דף התשלום בחלון נפרד */
+  | "external-ready"
   /** דף Grow נפתח בחלון חיצוני; ממתינים לאישור שרת */
   | "external"
   /** חזרנו מ-Grow; ממתינים לאישור שרת */
@@ -231,6 +233,18 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
             </div>
           )}
 
+          {phase === "external-ready" && (
+            <div className="text-center space-y-3 py-4" data-testid="checkout-external-ready">
+              <span className="mx-auto w-11 h-11 rounded-full bg-brand-50 text-brand-700 ring-1 ring-brand-100 flex items-center justify-center">
+                <Icon name="lock" className="w-5 h-5" />
+              </span>
+              <p className="font-display text-lg font-bold text-stone-900">דף התשלום המאובטח מוכן</p>
+              <p className="text-sm text-stone-600">
+                דף התשלום של Grow ייפתח בחלון נפרד. אחרי התשלום חזרו לחלון הזה: השעות ייטענו אוטומטית לאחר קבלת אישור תשלום מאומת.
+              </p>
+            </div>
+          )}
+
           {(phase === "verifying" || phase === "external") && (
             <div className="text-center space-y-3 py-4" role="status" aria-live="polite">
               {returnHint === "cancel" ? (
@@ -276,6 +290,17 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
             <button type="button" className="btn btn-secondary" onClick={onClose}>
               סגירה
             </button>
+          )}
+          {phase === "external-ready" && (
+            <>
+              <button type="button" className="btn btn-secondary" onClick={onClose}>
+                סגירה
+              </button>
+              <button type="button" className="btn btn-primary" onClick={onOpenExternal} data-testid="checkout-open-external">
+                <Icon name="lock" className="w-4 h-4" />
+                פתיחת דף התשלום המאובטח
+              </button>
+            </>
           )}
           {(phase === "verifying" || phase === "external") && (
             <>
