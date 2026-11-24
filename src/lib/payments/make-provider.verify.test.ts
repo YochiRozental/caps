@@ -66,7 +66,7 @@ test("כתובת החזרה נבנית מבסיס האתר ומזהה ההזמנ
   assert.equal(calls[0].body.returnUrl, BASE + "/booking/checkout/abc12345");
   const pkg = setup();
   await pkg.p.createPaymentRequest({ ...BOOKING_REQ, idempotencyKey: "pkg:z", metadata: { packageHours: "5" } });
-  assert.equal(pkg.calls[0].body.returnUrl, BASE + "/profile/hours");
+  assert.equal(pkg.calls[0].body.returnUrl, BASE + "/payments/return");
 });
 
 test("ממתין (קוד 0 / חסר / לא מוכר) נשאר PENDING עם הסכום שביקשנו, ולעולם לא SUCCEEDED", async () => {

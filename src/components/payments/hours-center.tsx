@@ -15,6 +15,17 @@ import {
   useSingleFlight,
 } from "@/lib/payments/client";
 import type { BalanceView, HistoryEntry, PackageView } from "@/lib/payments/views";
+import { SecureCheckoutModal, type CheckoutPhase } from "@/components/payments/secure-checkout-modal";
+import {
+  canReopenCheckout,
+  isEmbeddableCheckoutUrl,
+  parseStoredPurchase,
+  pendingPackagePaymentIds,
+  resolvePurchaseOutcome,
+  type PurchaseResolution,
+  type ReturnHint,
+  type StoredPurchase,
+} from "@/lib/payments/embedded-checkout";
 
 export interface PackageOfferView {
   hours: number;
@@ -35,21 +46,45 @@ export function HoursCenter({ canPurchase, packages }: { canPurchase: boolean; p
   const [tab, setTab] = useState<Tab>("balance");
   const [balanceVersion, setBalanceVersion] = useState(0);
   const bump = useCallback(() => setBalanceVersion((v) => v + 1), []);
+  const [recovered, setRecovered] = useState<string | null>(null);
 
   useEffect(() => {
+    let tracked: StoredPurchase | null = null;
     try {
-      if (window.sessionStorage.getItem(PURCHASE_STORAGE)) {
+      tracked = parseStoredPurchase(window.sessionStorage.getItem(PURCHASE_STORAGE));
+      if (tracked) {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- הבחירה תלויה ברכישה שנשמרה בדפדפן לפני המעבר לתשלום
         setTab("buy");
       }
     } catch {
       // האחסון עשוי להיות חסום בדפדפן
     }
-  }, []);
+    // לקוח ששילם וסגר את הדפדפן לפני האישור: רכישות PENDING מההיסטוריה נשלחות לאימות בשרת. השרת לבדו מחליט,
+    // והזיכוי חד-פעמי (HoursPackage.paymentId ייחודי), כך שבדיקה חוזרת לעולם לא מזכה פעמיים
+    let cancelled = false;
+    void (async () => {
+      const history = await api<{ entries: HistoryEntry[] }>("/api/payments/history");
+      if (!history.ok || cancelled) return;
+      const ids = pendingPackagePaymentIds(history.data.entries ?? [], Date.now()).filter((id) => id !== tracked?.paymentId);
+      let activatedHours = 0;
+      for (const id of ids) {
+        const res = await api<{ outcome?: string; package?: { hours: number } | null }>(`/api/payments/${id}`);
+        if (res.ok && resolvePurchaseOutcome(res.data.outcome) === "activated") activatedHours += res.data.package?.hours ?? 0;
+      }
+      if (!cancelled && activatedHours > 0) {
+        setRecovered(`תשלום שהושלם קודם אושר: ${durationText(activatedHours * 60)} נוספו ליתרה שלכם.`);
+        bump();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [bump]);
 
   return (
     <div className="space-y-6">
       {gate.sandbox && <SandboxNotice />}
+      {recovered && <Alert tone="success">{recovered}</Alert>}
       <div role="tablist" aria-label="חבילות שעות" className="flex gap-2 overflow-x-auto pb-1">
         {TABS.map((t) => (
           <button
@@ -273,13 +308,6 @@ function CancelRequestDialog({ pkg, onClose, onSent }: { pkg: PackageView; onClo
 
 // ───────────────────────────── רכישת חבילות ─────────────────────────────
 
-interface Purchase {
-  paymentId: string;
-  providerPaymentId?: string;
-  hours: number;
-  amountAgorot: number;
-}
-
 type PurchaseMessage = { tone: "success" | "error" | "warn"; text: string };
 
 const PURCHASE_STORAGE = "hours:purchase";
@@ -289,16 +317,47 @@ function newClientKey(): string {
   return globalThis.crypto.randomUUID().replace(/-/g, "");
 }
 
+function savePurchase(p: StoredPurchase | null) {
+  try {
+    if (p) window.sessionStorage.setItem(PURCHASE_STORAGE, JSON.stringify(p));
+    else window.sessionStorage.removeItem(PURCHASE_STORAGE);
+  } catch {
+    // האחסון עשוי להיות חסום בדפדפן: האימות בשרת ממשיך לעבוד, ורכישה שלא נסגרה תשוחזר מההיסטוריה
+  }
+}
+
+const RESOLUTION_MESSAGE: Record<Exclude<PurchaseResolution, "activated" | "pending">, PurchaseMessage> = {
+  failed: { tone: "error", text: "התשלום נכשל ולא בוצע חיוב. לא נוספה יתרה. אפשר לנסות שוב." },
+  cancelled: { tone: "warn", text: "התשלום בוטל ולא בוצע חיוב. לא נוספה יתרה." },
+  mismatch: { tone: "error", text: "סכום התשלום אינו תואם לחבילה ולכן היא לא הופעלה. אנא צרו קשר." },
+};
+
+interface Offer {
+  hours: number;
+  priceAgorot: number;
+  key: string;
+}
+
 function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: boolean; sandbox: boolean; onActivated: () => void; packages: PackageOfferView[] }) {
-  const [confirming, setConfirming] = useState<{ hours: number; priceAgorot: number; key: string } | null>(null);
-  const [purchase, setPurchase] = useState<Purchase | null>(null);
+  /** הכרטיסייה שנבחרה (חלונית התשלום פתוחה כשיש ערך) */
+  const [offer, setOffer] = useState<Offer | null>(null);
+  const [phase, setPhase] = useState<CheckoutPhase>("summary");
+  const [returnHint, setReturnHint] = useState<ReturnHint>("unknown");
+  const [purchase, setPurchase] = useState<StoredPurchase | null>(null);
   const [message, setMessage] = useState<PurchaseMessage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { busy, run } = useSingleFlight();
   const checking = useRef(false);
 
+  const closeModal = useCallback(() => {
+    setOffer(null);
+    setPhase("summary");
+    setReturnHint("unknown");
+    setError(null);
+  }, []);
+
   const verify = useCallback(
-    async (p: Purchase) => {
+    async (p: StoredPurchase) => {
       if (checking.current) return;
       checking.current = true;
       try {
@@ -307,92 +366,152 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
           setMessage({ tone: "error", text: res.data.error ?? "לא ניתן לאמת את התשלום כעת" });
           return;
         }
-        const outcome = res.data.outcome;
-        if (outcome === "PACKAGE_ACTIVATED" || outcome === "ALREADY_ACTIVATED") {
+        const resolution = resolvePurchaseOutcome(res.data.outcome);
+        if (resolution === "pending") return;
+        savePurchase(null);
+        setPurchase(null);
+        closeModal();
+        if (resolution === "activated") {
           // הצלחה מוצגת רק אחרי שהשרת אישר שהחבילה הופעלה
-          window.sessionStorage.removeItem(PURCHASE_STORAGE);
-          setPurchase(null);
-          setMessage({ tone: "success", text: `החבילה הופעלה: ${durationText((res.data.package?.hours ?? p.hours) * 60)} נוספו ליתרה שלכם.` });
+          setMessage({ tone: "success", text: `התשלום אושר והחבילה הופעלה: ${durationText((res.data.package?.hours ?? p.hours) * 60)} נוספו ליתרה שלכם.` });
           onActivated();
-        } else if (outcome === "PAYMENT_FAILED") {
-          window.sessionStorage.removeItem(PURCHASE_STORAGE);
-          setPurchase(null);
-          setMessage({ tone: "error", text: "התשלום נכשל ולא בוצע חיוב. לא נוספה יתרה. אפשר לנסות שוב." });
-        } else if (outcome === "PAYMENT_CANCELLED") {
-          window.sessionStorage.removeItem(PURCHASE_STORAGE);
-          setPurchase(null);
-          setMessage({ tone: "warn", text: "התשלום בוטל ולא בוצע חיוב. לא נוספה יתרה." });
-        } else if (outcome === "AMOUNT_MISMATCH") {
-          window.sessionStorage.removeItem(PURCHASE_STORAGE);
-          setPurchase(null);
-          setMessage({ tone: "error", text: "סכום התשלום אינו תואם לחבילה ולכן היא לא הופעלה. אנא צרו קשר." });
+        } else {
+          setMessage(RESOLUTION_MESSAGE[resolution]);
         }
       } finally {
         checking.current = false;
       }
     },
-    [onActivated]
+    [onActivated, closeModal]
   );
 
   // המשך אחרי רענון דף: הרכישה הממתינה נשמרת בסשן, ומצבה נשאל מחדש מהשרת
   useEffect(() => {
+    let raw: string | null = null;
     try {
-      const raw = window.sessionStorage.getItem(PURCHASE_STORAGE);
-      if (!raw) return;
-      const p = JSON.parse(raw) as Purchase;
-      if (p?.paymentId) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- שחזור רכישה ממתינה שנשמרה בסשן
-        setPurchase(p);
-        void verify(p);
-      }
+      raw = window.sessionStorage.getItem(PURCHASE_STORAGE);
     } catch {
-      // אחסון פגום: מתעלמים
+      return;
     }
+    const p = parseStoredPurchase(raw);
+    if (!p) {
+      if (raw) savePurchase(null);
+      return;
+    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- שחזור רכישה ממתינה שנשמרה בסשן
+    setPurchase(p);
+    void verify(p);
   }, [verify]);
 
+  // כל עוד יש רכישה פתוחה (גם כשהחלונית סגורה) השרת נשאל שוב ושוב. רק תשובתו קובעת הצלחה
   useEffect(() => {
     if (!purchase) return;
     const id = window.setInterval(() => void verify(purchase), POLL_MS);
     return () => window.clearInterval(id);
   }, [purchase, verify]);
 
+  // שעון לתצוגה בלבד: מתי להפסיק להציע "חזרה לדף התשלום" (הקישור של Grow פג אחרי כ-10 דקות)
+  const [clock, setClock] = useState(0);
+  useEffect(() => {
+    if (!purchase) return;
+    const tick = () => setClock(Date.now());
+    tick();
+    const id = window.setInterval(tick, 15_000);
+    return () => window.clearInterval(id);
+  }, [purchase]);
+
   async function start() {
-    if (!confirming) return;
-    const { hours, key } = confirming;
+    if (!offer) return;
+    const { hours, key } = offer;
     await run(async () => {
       setError(null);
       setMessage(null);
-      const res = await api<Purchase & { checkoutUrl?: string; communicationTest?: boolean; outcome?: string }>(
+      setPhase("creating");
+      const res = await api<{
+        paymentId: string;
+        providerPaymentId?: string;
+        hours: number;
+        amountAgorot: number;
+        checkoutUrl?: string;
+        communicationTest?: boolean;
+        outcome?: string;
+      }>(
         "/api/payments/packages/purchase",
-        // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת
+        // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת. אותו מפתח בלחיצה חוזרת = אותה עסקה
         { body: { hours, clientKey: key } }
       );
       if (!res.ok) {
-        setError(res.data.error ?? "לא ניתן להתחיל את הרכישה");
+        setPhase("summary");
+        setError(res.data.error ?? "לא ניתן ליצור את דף התשלום כעת. לא בוצע חיוב, אפשר לנסות שוב.");
         return;
       }
       // בדיקת תקשורת ל-Make (Staging בלבד): לא נוצר תשלום, אין מה לשמור או לאמת
       if (res.data.communicationTest) {
-        setConfirming(null);
+        closeModal();
         setMessage({ tone: "warn", text: `בדיקת תקשורת: הבקשה נשלחה ל-Make (${res.data.outcome ?? "לא ידוע"}). לא נוצר תשלום ולא נוספה יתרה.` });
         return;
       }
-      const p: Purchase = {
+      const checkoutUrl = res.data.checkoutUrl;
+      const embeddable = isEmbeddableCheckoutUrl(checkoutUrl);
+      const p: StoredPurchase = {
         paymentId: res.data.paymentId,
         providerPaymentId: res.data.providerPaymentId,
         hours: res.data.hours,
         amountAgorot: res.data.amountAgorot,
+        ...(embeddable ? { checkoutUrl, checkoutCreatedAt: Date.now() } : {}),
       };
-      window.sessionStorage.setItem(PURCHASE_STORAGE, JSON.stringify(p));
-      setConfirming(null);
+      savePurchase(p);
       setPurchase(p);
-      if (typeof res.data.checkoutUrl === "string" && res.data.checkoutUrl.startsWith("https://")) {
-        window.location.assign(res.data.checkoutUrl);
+      if (embeddable) {
+        setPhase("checkout");
         return;
       }
+      // ספק ללא דף תשלום (Mock מקומי): החלונית נסגרת והמצב מוצג בכרטיס הרכישה הממתינה
+      closeModal();
       void verify(p);
     });
   }
+
+  function openExternal() {
+    if (!purchase?.checkoutUrl) return;
+    // noopener: לדף התשלום אין גישה לחלון האתר. הסיום מזוהה מאימות השרת (polling), לא מהחלון החיצוני
+    window.open(purchase.checkoutUrl, "_blank", "noopener,noreferrer");
+    setReturnHint("unknown");
+    setPhase("external");
+  }
+
+  function onReturned(hint: ReturnHint) {
+    setReturnHint(hint);
+    setPhase("verifying");
+    if (purchase) void verify(purchase);
+  }
+
+  function reopen() {
+    if (!purchase || !canReopenCheckout(purchase, Date.now())) return;
+    setError(null);
+    setReturnHint("unknown");
+    setOffer({ hours: purchase.hours, priceAgorot: purchase.amountAgorot, key: "" });
+    setPhase("checkout");
+  }
+
+  /** ביטול מעקב מקומי בלבד, אחרי שהשרת אישר שהתשלום עדיין לא הושלם. אם ישולם בהמשך - ישוחזר מההיסטוריה ויופעל */
+  async function abandon() {
+    if (!purchase) return;
+    await run(async () => {
+      const res = await api<{ outcome?: string }>(`/api/payments/${purchase.paymentId}`);
+      if (res.ok && resolvePurchaseOutcome(res.data.outcome) === "pending") {
+        savePurchase(null);
+        setPurchase(null);
+        setMessage({ tone: "warn", text: "הרכישה בוטלה ולא בוצע חיוב. אפשר לבחור כרטיסייה מחדש." });
+      } else if (res.ok) {
+        void verify(purchase);
+      } else {
+        setMessage({ tone: "error", text: res.data.error ?? "לא ניתן לבדוק את מצב התשלום כעת" });
+      }
+    });
+  }
+
+  const canReopen = !!purchase && clock > 0 && canReopenCheckout(purchase, clock);
 
   return (
     <div className="space-y-6">
@@ -414,18 +533,30 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
         </p>
       )}
 
-      {purchase && (
+      {purchase && !offer && (
         <section className="card p-5 sm:p-8 space-y-4" data-testid="purchase-status">
           <SectionTitle aside={<PaymentStatusBadge status="PENDING" />}>רכישת חבילת {purchase.hours} שעות</SectionTitle>
           <p className="text-sm text-stone-600">
-            סכום לתשלום: <strong>{shekel(purchase.amountAgorot)}</strong>. החבילה תופעל רק לאחר שהשרת יאמת את התשלום. ניתן לרענן את הדף בבטחה.
+            סכום לתשלום: <strong>{shekel(purchase.amountAgorot)}</strong>. ממתינים לאישור תשלום מאומת. אם כבר שילמתם, החבילה תופעל
+            אוטומטית ברגע שהאישור יתקבל, ואין צורך לשלם שוב. ניתן לרענן את הדף בבטחה.
           </p>
           {sandbox && purchase.providerPaymentId && (
             <SandboxPanel providerPaymentId={purchase.providerPaymentId} onDone={() => void verify(purchase)} />
           )}
-          <button type="button" className="btn btn-secondary btn-sm" onClick={() => void verify(purchase)}>
-            בדיקת סטטוס עכשיו
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {canReopen && (
+              <button type="button" className="btn btn-primary btn-sm" onClick={reopen}>
+                <Icon name="lock" className="w-4 h-4" />
+                חזרה לדף התשלום
+              </button>
+            )}
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void verify(purchase)}>
+              בדיקת סטטוס עכשיו
+            </button>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void abandon()} disabled={busy}>
+              ביטול הרכישה
+            </button>
+          </div>
         </section>
       )}
 
@@ -444,10 +575,12 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
               <button
                 type="button"
                 className="btn btn-primary mt-auto"
-                disabled={!canPurchase || busy || !!purchase}
+                disabled={!canPurchase || busy || !!purchase || !!offer}
                 onClick={() => {
                   setError(null);
-                  setConfirming({ hours: p.hours, priceAgorot: p.priceAgorot, key: newClientKey() });
+                  setMessage(null);
+                  setPhase("summary");
+                  setOffer({ hours: p.hours, priceAgorot: p.priceAgorot, key: newClientKey() });
                 }}
               >
                 רכישה
@@ -457,27 +590,24 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
         </ul>
       </section>
 
-      {confirming && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-stone-900/40 p-4" role="presentation">
-          <div role="dialog" aria-modal="true" aria-labelledby="buy-dialog-title" className="card w-full max-w-md p-6 space-y-4">
-            <h2 id="buy-dialog-title" className="font-display text-xl font-bold text-stone-900">
-              רכישת חבילת {confirming.hours} שעות
-            </h2>
-            <p className="text-sm text-stone-600">
-              סכום לתשלום: <strong>{shekel(confirming.priceAgorot)}</strong>. החבילה תקפה שנה מיום הרכישה.
-              {sandbox && " התשלום מדומה: לא מתבצע חיוב אמיתי ולא מוזנים פרטי כרטיס."}
-            </p>
-            {error && <Alert tone="error">{error}</Alert>}
-            <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
-              <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setConfirming(null)}>
-                חזרה
-              </button>
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={start}>
-                {busy ? "פותח תשלום..." : "המשך לתשלום"}
-              </button>
-            </div>
-          </div>
-        </div>
+      {offer && (
+        <SecureCheckoutModal
+          hours={purchase?.hours ?? offer.hours}
+          amountAgorot={purchase?.amountAgorot ?? offer.priceAgorot}
+          phase={phase}
+          checkoutUrl={purchase?.checkoutUrl}
+          error={error}
+          returnHint={returnHint}
+          sandbox={sandbox}
+          onStart={() => void start()}
+          onClose={closeModal}
+          onReturned={onReturned}
+          onOpenExternal={openExternal}
+          onReopen={canReopen ? reopen : undefined}
+          onCheckNow={() => {
+            if (purchase) void verify(purchase);
+          }}
+        />
       )}
     </div>
   );

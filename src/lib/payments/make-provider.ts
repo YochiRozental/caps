@@ -3,6 +3,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { prisma as defaultDb } from "@/lib/prisma";
 import { agorotToShekels, assertFullName, normalizeIsraeliPhone, shekelsToAgorot } from "@/lib/payments/grow-provider";
 import { PrismaMockStore, type MockStore } from "@/lib/payments/mock-store";
+import { PACKAGE_RETURN_PATH } from "@/lib/payments/embedded-checkout";
 import {
   PaymentError,
   WebhookVerificationError,
@@ -215,7 +216,8 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
     const base = this.cfg.returnBaseUrl?.replace(/[/]+$/, "");
     const id = input.metadata?.appointmentId;
     if (base && id && /^[A-Za-z0-9_-]{8,64}$/.test(id)) return `${base}/booking/checkout/${id}`;
-    if (base && input.metadata?.packageHours) return `${base}/profile/hours`;
+    // חבילות: דף החזרה ייעודי שעובד גם בתוך חלונית התשלום (iframe) - הוא רק מבקש מהחלון המארח לבדוק סטטוס בשרת
+    if (base && input.metadata?.packageHours) return `${base}${PACKAGE_RETURN_PATH}`;
     return input.returnUrl;
   }
 
