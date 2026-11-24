@@ -35,6 +35,7 @@ const createUserSchema = z.object({
   password: optionalField(
     z.string().min(4, "הסיסמה חייבת להכיל לפחות 4 תווים"),
   ),
+  gender: z.enum(["MALE", "FEMALE"]).optional(),
   role: z.enum(["CLIENT", "ADMIN"]).default("CLIENT"),
   status: z.enum(["PENDING", "APPROVED", "BLOCKED"]).default("APPROVED"),
 });
@@ -69,6 +70,7 @@ export async function POST(request: Request) {
     phone,
     idNumber,
     password,
+    gender,
     role,
     status,
   } = parsed.data;
@@ -115,6 +117,7 @@ export async function POST(request: Request) {
         idNumber: normalizedId,
         passwordHash,
         mustChangePassword: true,
+        gender,
         role,
         status,
       },
@@ -204,6 +207,7 @@ export async function GET(request: Request) {
     name: true,
     email: true,
     phone: true,
+    gender: true,
     role: true,
     status: true,
     createdAt: true,
