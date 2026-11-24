@@ -55,7 +55,12 @@ export async function POST(request: Request) {
   try {
     const started = await startPackagePurchase({ userId: session.user.id, hours, clientKey, provider });
     // האם דף התשלום מתיר הטמעה באתר (לפי כותרות האבטחה של הספק). אם לא - החלונית תפתח אותו בחלון נפרד
-    const checkoutEmbeddable = started.checkoutUrl ? await probeCheckoutEmbeddable(started.checkoutUrl, publicOrigin(request)) : undefined;
+    let checkoutEmbeddable: boolean | undefined;
+    if (started.checkoutUrl) {
+      const probe = await probeCheckoutEmbeddable(started.checkoutUrl, publicOrigin(request));
+      checkoutEmbeddable = probe.embeddable;
+      console.log(`[payments] checkout framing host=${new URL(started.checkoutUrl).hostname} embeddable=${probe.embeddable} reason=${probe.reason}`);
+    }
     return NextResponse.json({ ...withoutProviderInternals(started, provider), checkoutEmbeddable });
   } catch (err) {
     return errorResponse(err);

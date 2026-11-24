@@ -55,14 +55,16 @@ export function framingAllowed(headers: { get(name: string): string | null }, ou
 const PROBE_TIMEOUT_MS = 3000;
 
 /**
- * בדיקת שרת של דף התשלום (GET בלי הרצת סקריפטים - רק קריאת כותרות). כשל בבדיקה (רשת/זמן) = "לא ידוע", ואז מנסים
- * iframe כרגיל, והחלונית עדיין מציעה חלון חיצוני. הבדיקה היא חוויית משתמש בלבד ואינה נוגעת בתשלום.
+ * בדיקת שרת של דף התשלום (GET בלי הרצת סקריפטים - רק קריאת כותרות). החלטה שמרנית: true רק כשהדף עצמו נטען (2xx)
+ * וכותרותיו מתירות הטמעה. כל דבר אחר (כשל רשת, חריגת זמן, דף חסימת-בוטים או שגיאה שמחזירים לשרת בלי כותרות הדף
+ * האמיתי) = false, והחלונית פותחת חלון נפרד שתמיד עובד. כך לא מוצג iframe שהדפדפן יחסום.
+ * הבדיקה היא חוויית משתמש בלבד ואינה נוגעת בתשלום.
  */
 export async function probeCheckoutEmbeddable(
   checkoutUrl: string,
   ourOrigin: string,
   fetchImpl: typeof fetch = fetch
-): Promise<boolean | undefined> {
+): Promise<{ embeddable: boolean; reason: string }> {
   try {
     const res = await fetchImpl(checkoutUrl, {
       method: "GET",
@@ -72,8 +74,10 @@ export async function probeCheckoutEmbeddable(
     });
     // לא קוראים את הגוף: רק הכותרות רלוונטיות
     res.body?.cancel().catch(() => {});
-    return framingAllowed(res.headers, ourOrigin, res.url || checkoutUrl);
+    if (res.status < 200 || res.status >= 300) return { embeddable: false, reason: `http_${res.status}` };
+    const allowed = framingAllowed(res.headers, ourOrigin, res.url || checkoutUrl);
+    return { embeddable: allowed, reason: allowed ? "headers_allow" : "headers_forbid" };
   } catch {
-    return undefined;
+    return { embeddable: false, reason: "probe_failed" };
   }
 }

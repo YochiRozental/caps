@@ -16,6 +16,7 @@ import {
 } from "@/lib/payments/client";
 import type { BalanceView, HistoryEntry, PackageView } from "@/lib/payments/views";
 import { SecureCheckoutModal, type CheckoutPhase } from "@/components/payments/secure-checkout-modal";
+import { VERIFY_UNAVAILABLE_CODE } from "@/lib/payments/verify-errors";
 import {
   canReopenCheckout,
   checkoutPhaseFor,
@@ -313,6 +314,8 @@ type PurchaseMessage = { tone: "success" | "error" | "warn"; text: string };
 
 const PURCHASE_STORAGE = "hours:purchase";
 const POLL_MS = 4000;
+/** כשהאימות מול Make/Grow אינו זמין זמנית: מנסים שוב לאט יותר, כדי לא להציף את Make בבקשות שנכשלות */
+const DEGRADED_POLL_MS = 30_000;
 
 function newClientKey(): string {
   return globalThis.crypto.randomUUID().replace(/-/g, "");
@@ -349,6 +352,8 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
   const [error, setError] = useState<string | null>(null);
   const { busy, run } = useSingleFlight();
   const checking = useRef(false);
+  /** הודעת "אימות לא זמין זמנית" מהשרת (503). התשלום עדיין ממתין - לא שגיאה ולא כישלון */
+  const [verifyUnavailable, setVerifyUnavailable] = useState<string | null>(null);
 
   const closeModal = useCallback(() => {
     setOffer(null);
@@ -363,10 +368,15 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
       checking.current = true;
       try {
         const res = await api<{ outcome?: string; package?: { hours: number } | null }>(`/api/payments/${p.paymentId}`);
+        if (res.status === 503 && res.data.code === VERIFY_UNAVAILABLE_CODE) {
+          setVerifyUnavailable(res.data.error ?? "לא ניתן לאמת כרגע את התשלום. המערכת תנסה שוב.");
+          return;
+        }
         if (!res.ok) {
           setMessage({ tone: "error", text: res.data.error ?? "לא ניתן לאמת את התשלום כעת" });
           return;
         }
+        setVerifyUnavailable(null);
         const resolution = resolvePurchaseOutcome(res.data.outcome);
         if (resolution === "pending") return;
         savePurchase(null);
@@ -407,9 +417,9 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
   // כל עוד יש רכישה פתוחה (גם כשהחלונית סגורה) השרת נשאל שוב ושוב. רק תשובתו קובעת הצלחה
   useEffect(() => {
     if (!purchase) return;
-    const id = window.setInterval(() => void verify(purchase), POLL_MS);
+    const id = window.setInterval(() => void verify(purchase), verifyUnavailable ? DEGRADED_POLL_MS : POLL_MS);
     return () => window.clearInterval(id);
-  }, [purchase, verify]);
+  }, [purchase, verify, verifyUnavailable]);
 
   // שעון לתצוגה בלבד: מתי להפסיק להציע "חזרה לדף התשלום" (הקישור של Grow פג אחרי כ-10 דקות)
   const [clock, setClock] = useState(0);
@@ -508,6 +518,13 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
         setMessage({ tone: "warn", text: "הרכישה בוטלה ולא בוצע חיוב. אפשר לבחור כרטיסייה מחדש." });
       } else if (res.ok) {
         void verify(purchase);
+      } else if (res.status === 503 && res.data.code === VERIFY_UNAVAILABLE_CODE) {
+        // לא מבטלים כשלא ידוע אם שולם: ביטול כאן עלול להוביל לתשלום כפול. הרכישה נשארת פתוחה עד שהאימות יצליח
+        setVerifyUnavailable(res.data.error ?? null);
+        setMessage({
+          tone: "warn",
+          text: "לא ניתן לבטל כרגע: עדיין לא ידוע אם התשלום בוצע, כי האימות מול Grow אינו זמין זמנית. כדי למנוע חיוב כפול, הרכישה נשארת פתוחה עד שהאימות יצליח.",
+        });
       } else {
         setMessage({ tone: "error", text: res.data.error ?? "לא ניתן לבדוק את מצב התשלום כעת" });
       }
@@ -543,6 +560,11 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
             סכום לתשלום: <strong>{shekel(purchase.amountAgorot)}</strong>. ממתינים לאישור תשלום מאומת. אם כבר שילמתם, החבילה תופעל
             אוטומטית ברגע שהאישור יתקבל, ואין צורך לשלם שוב. ניתן לרענן את הדף בבטחה.
           </p>
+          {verifyUnavailable && (
+            <p role="status" className="rounded-xl px-4 py-3 text-sm bg-bronze-50 text-bronze-700 border border-bronze-200" data-testid="verify-unavailable">
+              {verifyUnavailable}
+            </p>
+          )}
           {sandbox && purchase.providerPaymentId && (
             <SandboxPanel providerPaymentId={purchase.providerPaymentId} onDone={() => void verify(purchase)} />
           )}

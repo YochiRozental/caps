@@ -11,6 +11,7 @@ import {
 } from "@/lib/payments/mock-access";
 import { PaymentFlowError } from "@/lib/payments/booking-payment";
 import {
+  PaymentError,
   WebhookVerificationError,
   type PaymentProvider,
 } from "@/lib/payments/provider";
@@ -168,9 +169,10 @@ export function errorResponse(err: unknown) {
   if (err instanceof WebhookVerificationError)
     return NextResponse.json({ error: "חתימה לא תקינה" }, { status: 401 });
   // לא מחזירים פרטי שגיאה פנימיים ללקוח
+  // שם המחלקה מכווץ בבילד (למשל "t") ולכן חסר ערך; הודעות PaymentError נכתבות אצלנו בלי סודות, ולכן נרשמות
   console.error(
     "[payments] unexpected error",
-    err instanceof Error ? err.name : "unknown",
+    err instanceof PaymentError ? `PaymentError: ${err.message.slice(0, 200)}` : err instanceof Error ? err.name : "unknown",
   );
   return NextResponse.json({ error: "שגיאה בעיבוד הבקשה" }, { status: 500 });
 }

@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { finalizePayment } from "@/lib/payments/booking-payment";
 import { errorResponse, getFlowProvider, notFound } from "@/lib/payments/flow";
+import { VERIFY_UNAVAILABLE_CODE, VERIFY_UNAVAILABLE_MESSAGE, isTransientVerifyFailure, verifyFailureLogLine } from "@/lib/payments/verify-errors";
 
 /**
  * מצב תשלום. כל קריאה מאמתת מול הספק בצד השרת (והיא זו שמאשרת את ההזמנה אם התשלום הצליח),
@@ -40,6 +41,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       package: current.hoursPackage,
     });
   } catch (err) {
+    // תקלה זמנית מול Make/Grow: התשלום נשאר ממתין (לא מאושר ולא נדחה), והלקוח מקבל הסבר ברור במקום שגיאה כללית
+    if (isTransientVerifyFailure(err)) {
+      console.error(verifyFailureLogLine(err, id));
+      return NextResponse.json({ error: VERIFY_UNAVAILABLE_MESSAGE, code: VERIFY_UNAVAILABLE_CODE }, { status: 503 });
+    }
     return errorResponse(err);
   }
 }

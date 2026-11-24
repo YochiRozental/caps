@@ -44,15 +44,20 @@ test("כמה מדיניויות בכותרת: כל אחת חייבת להתיר"
   assert.equal(framingAllowed(h({ "content-security-policy": `frame-ancestors *, frame-ancestors 'none'` }), OURS, LINK), false);
 });
 
-test("בדיקת השרת: כותרות הספק קובעות; כשל רשת = לא ידוע", async () => {
+test("בדיקת השרת: iframe רק כשהדף נטען (2xx) וכותרותיו מתירות; כל השאר = חלון נפרד", async () => {
   const blocked = (async () => new Response("", { headers: { "content-security-policy": GROW_LINK_CSP } })) as unknown as typeof fetch;
   const open = (async () => new Response("", {})) as unknown as typeof fetch;
+  // דף חסימת-בוטים/שגיאה שמוחזר לשרת: אין בו את כותרות הדף האמיתי, ולכן אסור להסיק ממנו "מותר"
+  const botWall = (async () => new Response("blocked", { status: 403 })) as unknown as typeof fetch;
+  const serverError = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
   const broken = (async () => {
     throw new Error("timeout");
   }) as unknown as typeof fetch;
-  assert.equal(await probeCheckoutEmbeddable(LINK, OURS, blocked), false);
-  assert.equal(await probeCheckoutEmbeddable(LINK, OURS, open), true);
-  assert.equal(await probeCheckoutEmbeddable(LINK, OURS, broken), undefined);
+  assert.deepEqual(await probeCheckoutEmbeddable(LINK, OURS, blocked), { embeddable: false, reason: "headers_forbid" });
+  assert.deepEqual(await probeCheckoutEmbeddable(LINK, OURS, open), { embeddable: true, reason: "headers_allow" });
+  assert.deepEqual(await probeCheckoutEmbeddable(LINK, OURS, botWall), { embeddable: false, reason: "http_403" });
+  assert.deepEqual(await probeCheckoutEmbeddable(LINK, OURS, serverError), { embeddable: false, reason: "http_503" });
+  assert.deepEqual(await probeCheckoutEmbeddable(LINK, OURS, broken), { embeddable: false, reason: "probe_failed" });
 });
 
 test("החלונית: iframe רק כשלא ידוע שהספק אוסר; הבחירה נשמרת לפתיחה מחדש", () => {
