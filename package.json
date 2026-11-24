@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --import tsx --experimental-test-module-mocks --test src/lib/*.test.ts src/lib/payments/*.test.ts src/lib/ivr-pin/*.test.ts src/lib/shifts/*.test.ts src/lib/finance/*.test.ts src/lib/gallery/*.test.ts src/lib/staging-gate/*.test.ts src/ivr/*.test.ts src/app/api/register/*.test.ts src/app/api/staging-gate/login/*.test.ts src/app/api/appointments/*.test.ts",
+    "test:db": "node tools/test-db/run.mjs",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
