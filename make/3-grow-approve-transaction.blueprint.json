@@ -1,0 +1,288 @@
+{
+  "name": "Caps - Grow Sandbox - Approve Transaction",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1,
+      "parameters": {
+        "maxResults": 1
+      },
+      "mapper": {},
+      "metadata": {
+        "designer": {
+          "x": 0,
+          "y": 0,
+          "name": "Site: approve transaction"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "module": "http:ActionSendData",
+      "version": 3,
+      "parameters": {
+        "handleErrors": false,
+        "useNewZLibDeCompress": true
+      },
+      "mapper": {
+        "url": "https://sandbox.meshulam.co.il/api/light/server/1.0/approveTransaction",
+        "serializeUrl": false,
+        "method": "post",
+        "headers": [],
+        "qs": [],
+        "bodyType": "multipart_form_data",
+        "formDataFields": [
+          {
+            "key": "pageCode",
+            "value": "PASTE_GROW_PAGE_CODE",
+            "fieldType": "text"
+          },
+          {
+            "key": "transactionId",
+            "value": "{{1.transactionId}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "transactionToken",
+            "value": "{{1.transactionToken}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "transactionTypeId",
+            "value": "{{1.transactionTypeId}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "paymentType",
+            "value": "{{1.paymentType}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "sum",
+            "value": "{{1.sum}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "firstPaymentSum",
+            "value": "{{1.firstPaymentSum}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "periodicalPaymentSum",
+            "value": "{{1.periodicalPaymentSum}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "paymentsNum",
+            "value": "{{1.paymentsNum}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "allPaymentsNum",
+            "value": "{{1.allPaymentsNum}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "paymentDate",
+            "value": "{{1.paymentDate}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "asmachta",
+            "value": "{{1.asmachta}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "description",
+            "value": "{{1.description}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "fullName",
+            "value": "{{1.fullName}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "payerPhone",
+            "value": "{{1.payerPhone}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "payerEmail",
+            "value": "{{1.payerEmail}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cardSuffix",
+            "value": "{{1.cardSuffix}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cardType",
+            "value": "{{1.cardType}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cardTypeCode",
+            "value": "{{1.cardTypeCode}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cardBrand",
+            "value": "{{1.cardBrand}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cardBrandCode",
+            "value": "{{1.cardBrandCode}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cardExp",
+            "value": "{{1.cardExp}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "processId",
+            "value": "{{1.processId}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "processToken",
+            "value": "{{1.processToken}}",
+            "fieldType": "text"
+          }
+        ],
+        "parseResponse": true,
+        "authUser": "",
+        "authPass": "",
+        "timeout": "20",
+        "shareCookies": false,
+        "ca": "",
+        "rejectUnauthorized": true,
+        "followRedirect": true,
+        "useQuerystring": false,
+        "gzip": true,
+        "useMtls": false
+      },
+      "metadata": {
+        "designer": {
+          "x": 300,
+          "y": 0,
+          "name": "Grow: approveTransaction"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "module": "builtin:BasicRouter",
+      "version": 1,
+      "mapper": null,
+      "metadata": {
+        "designer": {
+          "x": 600,
+          "y": 0
+        }
+      },
+      "routes": [
+        {
+          "flow": [
+            {
+              "id": 4,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": {
+                "name": "Grow OK",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{2.data.status}}",
+                      "b": "1",
+                      "o": "text:equal"
+                    }
+                  ]
+                ]
+              },
+              "mapper": {
+                "status": "200",
+                "body": "{\"reference\":\"{{1.reference}}\",\"status\":\"{{2.data.status}}\"}",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "metadata": {
+                "designer": {
+                  "x": 900,
+                  "y": -150,
+                  "name": "Reply: approved"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "flow": [
+            {
+              "id": 5,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": {
+                "name": "Grow error",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{2.data.status}}",
+                      "b": "1",
+                      "o": "text:notequal"
+                    }
+                  ]
+                ]
+              },
+              "mapper": {
+                "status": "502",
+                "body": "{\"error\":\"grow_approve_failed\"}",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "metadata": {
+                "designer": {
+                  "x": 900,
+                  "y": 150,
+                  "name": "Reply: Grow error"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "instant": true,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": false,
+      "confidential": true,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": {
+      "orphans": []
+    }
+  }
+}

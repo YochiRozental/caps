@@ -1,0 +1,136 @@
+{
+  "name": "Caps - Grow Sandbox - Get Payment Link Info",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1,
+      "parameters": {
+        "maxResults": 1
+      },
+      "mapper": {},
+      "metadata": {
+        "designer": { "x": 0, "y": 0, "name": "Site: verify payment" }
+      }
+    },
+    {
+      "id": 2,
+      "module": "http:ActionSendData",
+      "version": 3,
+      "parameters": {
+        "handleErrors": false,
+        "useNewZLibDeCompress": true
+      },
+      "mapper": {
+        "url": "https://sandbox.meshulam.co.il/api/light/server/1.0/getPaymentProcessInfo",
+        "serializeUrl": false,
+        "method": "post",
+        "headers": [],
+        "qs": [],
+        "bodyType": "multipart_form_data",
+        "formDataFields": [
+          { "key": "pageCode", "value": "PASTE_GROW_PAGE_CODE", "fieldType": "text" },
+          { "key": "processId", "value": "{{1.processId}}", "fieldType": "text" },
+          { "key": "processToken", "value": "{{1.processToken}}", "fieldType": "text" }
+        ],
+        "parseResponse": true,
+        "authUser": "",
+        "authPass": "",
+        "timeout": "20",
+        "shareCookies": false,
+        "ca": "",
+        "rejectUnauthorized": true,
+        "followRedirect": true,
+        "useQuerystring": false,
+        "gzip": true,
+        "useMtls": false
+      },
+      "metadata": {
+        "designer": { "x": 300, "y": 0, "name": "Grow: getPaymentProcessInfo" }
+      }
+    },
+    {
+      "id": 3,
+      "module": "builtin:BasicRouter",
+      "version": 1,
+      "mapper": null,
+      "metadata": {
+        "designer": { "x": 600, "y": 0 }
+      },
+      "routes": [
+        {
+          "flow": [
+            {
+              "id": 4,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": {
+                "name": "Grow OK",
+                "conditions": [
+                  [
+                    { "a": "{{2.data.status}}", "b": "1", "o": "text:equal" }
+                  ]
+                ]
+              },
+              "mapper": {
+                "status": "200",
+                "body": "{\"reference\":\"{{1.reference}}\",\"processId\":\"{{1.processId}}\",\"currency\":\"ILS\",\"statusCode\":\"{{ifempty(first(map(2.data.data.transactions; statusCode; statusCode; 2)); last(map(2.data.data.transactions; statusCode)))}}\",\"sum\":\"{{first(map(2.data.data.transactions; sum; statusCode; 2))}}\",\"transactionId\":\"{{first(map(2.data.data.transactions; transactionId; statusCode; 2))}}\"}",
+                "headers": [
+                  { "key": "Content-Type", "value": "application/json" }
+                ]
+              },
+              "metadata": {
+                "designer": { "x": 900, "y": -150, "name": "Reply: payment status" }
+              }
+            }
+          ]
+        },
+        {
+          "flow": [
+            {
+              "id": 5,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": {
+                "name": "Grow error",
+                "conditions": [
+                  [
+                    { "a": "{{2.data.status}}", "b": "1", "o": "text:notequal" }
+                  ]
+                ]
+              },
+              "mapper": {
+                "status": "502",
+                "body": "{\"error\":\"grow_status_failed\"}",
+                "headers": [
+                  { "key": "Content-Type", "value": "application/json" }
+                ]
+              },
+              "metadata": {
+                "designer": { "x": 900, "y": 150, "name": "Reply: Grow error" }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "instant": true,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": false,
+      "confidential": true,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": { "orphans": [] }
+  }
+}
