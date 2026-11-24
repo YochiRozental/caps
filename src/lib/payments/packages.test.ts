@@ -1,6 +1,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type { RoomKey } from "@/generated/prisma/client";
+import type { PaymentProvider, VerifiedPaymentStatus } from "@/lib/payments/provider";
 
 // בדיקות אינטגרציה של חבילות שעות, יתרות ותשלום משולב מול PostgreSQL מקומי ייעודי (נפרד ממסדי הבדיקות האחרים,
 // כי הקבצים רצים במקביל וכל אחד מנקה את הנתונים שלו). רצות רק כש-PACKAGES_TEST_DATABASE_URL מוגדר ומצביע על מסד
@@ -62,6 +63,7 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
     await prisma.packageUsage.deleteMany({});
     await prisma.credit.deleteMany({});
     await prisma.refund.deleteMany({});
+    await prisma.paymentAnomaly.deleteMany({});
     await prisma.paymentAttempt.deleteMany({});
     await prisma.hoursPackage.deleteMany({});
     await prisma.payment.deleteMany({});
@@ -75,6 +77,8 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
   before(async () => {
     assertLocalTestDatabase(testUrl!);
     process.env.DATABASE_URL = testUrl;
+    // התראות חריגה לעולם לא נשלחות מבדיקות, גם אם .env המקומי כולל SMTP
+    delete process.env.SMTP_HOST;
     ({ prisma } = await import("@/lib/prisma"));
     booking = await import("@/lib/booking");
     svc = await import("@/lib/payments/booking-payment");
@@ -270,6 +274,149 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
     const h = await hold(userA, "ROOM3", 10);
     assert.equal((await confirmFromBalance(userA, h.id)).outcome, "CONFIRMED");
     assert.equal((await prisma.hoursPackage.findUniqueOrThrow({ where: { id: legacy.id } })).minutesRemaining, 100 * 60 - 60);
+  });
+
+  // ───────────── ניסיונות תשלום מרובים, חיוב מרובה ותשלום אחרי ביטול ─────────────
+
+  /** ספק שמחזיר תשובת אימות מתוסרטת (כשמוגדרת), אחרת מתנהג כמו ה-Mock: מדמה ספק שרואה את כל העסקאות */
+  function scripted(base: PaymentProvider, script: Map<string, Omit<VerifiedPaymentStatus, "providerPaymentId" | "refundedAgorot">>) {
+    return new Proxy(base, {
+      get(target, key) {
+        if (key === "getPaymentStatus") {
+          return async (id: string) => {
+            const s = script.get(id);
+            return s ? { providerPaymentId: id, refundedAgorot: 0, ...s } : target.getPaymentStatus(id);
+          };
+        }
+        const v = Reflect.get(target, key, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    }) as PaymentProvider;
+  }
+  const paidTx = (...ids: string[]) => ids.map((transactionId) => ({ transactionId, amountAgorot: 30000 }));
+  const anomaliesOf = (paymentId: string) => prisma.paymentAnomaly.findMany({ where: { paymentId } });
+
+  test("ניסיון שנכשל ואחריו ניסיון מוצלח באותו קישור: הרכישה אינה נסגרת לצמיתות ומופעלת פעם אחת", async () => {
+    const started = await pkgs.startPackagePurchase({ userId: userA, hours: 5, clientKey: nextKey(), provider });
+    await provider.completeCheckout(started.providerPaymentId!, "failure");
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider })).outcome, "PAYMENT_FAILED");
+    assert.equal((await payOf(started.paymentId)).status, "FAILED");
+
+    const script = new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, paidTransactions: paidTx("TX2") }]]);
+    const later = scripted(provider, script);
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: later })).outcome, "PACKAGE_ACTIVATED");
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: later })).outcome, "ALREADY_ACTIVATED");
+    assert.equal((await payOf(started.paymentId)).status, "SUCCEEDED");
+    assert.equal(await prisma.hoursPackage.count({ where: { paymentId: started.paymentId } }), 1);
+    assert.equal(await remaining(userA), 300);
+    assert.equal((await anomaliesOf(started.paymentId)).length, 0);
+  });
+
+  test("תשלום שהתקבל אחרי ביטול: לא מופעל אוטומטית, חריגה מתועדת פעם אחת (גם בהתראות חוזרות ובמקביל)", async () => {
+    const started = await pkgs.startPackagePurchase({ userId: userA, hours: 5, clientKey: nextKey(), provider });
+    await provider.cancelPayment(started.providerPaymentId!);
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider })).outcome, "PAYMENT_CANCELLED");
+
+    const late = scripted(provider, new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, paidTransactions: paidTx("LATE1") }]]));
+    const results = await Promise.all(Array.from({ length: 4 }, () => pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: late, recheck: true })));
+    assert.ok(results.every((r) => r.outcome === "PAYMENT_REVIEW"));
+    assert.equal(await prisma.hoursPackage.count({}), 0);
+    assert.equal((await payOf(started.paymentId)).status, "CANCELLED");
+    const rows = await anomaliesOf(started.paymentId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, "PAID_AFTER_CANCEL");
+    assert.equal(rows[0].transactionIds, "LATE1");
+    assert.equal(rows[0].status, "OPEN");
+    // אין SMTP בסביבת הבדיקות: ההתראה לא נשלחה, הכשל נרשם, ויישלח בניסיון הבא
+    assert.equal(rows[0].alertSentAt, null);
+    assert.equal(rows[0].lastAlertError, "smtp_not_configured");
+  });
+
+  test("חיוב מרובה לאותה רכישה: חבילה אחת בלבד וחריגה אחת, גם באימות מקביל מהדפדפן ומההתראה", async () => {
+    const started = await pkgs.startPackagePurchase({ userId: userA, hours: 5, clientKey: nextKey(), provider });
+    const twice = scripted(provider, new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, paidTransactions: paidTx("A1", "B2") }]]));
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: twice, recheck: i % 2 === 0 }))
+    );
+    assert.equal(results.filter((r) => r.outcome === "PACKAGE_ACTIVATED").length, 1);
+    assert.ok(results.every((r) => r.outcome === "PACKAGE_ACTIVATED" || r.outcome === "ALREADY_ACTIVATED"));
+    assert.equal(await prisma.hoursPackage.count({}), 1);
+    assert.equal(await remaining(userA), 300);
+    const rows = await anomaliesOf(started.paymentId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, "MULTIPLE_PAID");
+    assert.equal(rows[0].transactionIds, "A1,B2");
+    assert.equal(rows[0].paidAgorot, 60000);
+  });
+
+  test("חיוב מרובה, ברצף (דפדפן ואז התראות): הפעלה אחת, חריגה אחת עם שתי העסקאות", async () => {
+    const started = await pkgs.startPackagePurchase({ userId: userA, hours: 5, clientKey: nextKey(), provider });
+    const twice = scripted(provider, new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, paidTransactions: paidTx("A1", "B2") }]]));
+    const outcomes = [];
+    for (const recheck of [false, true, true, false]) {
+      outcomes.push((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: twice, recheck })).outcome);
+    }
+    assert.deepEqual(outcomes, ["PACKAGE_ACTIVATED", "ALREADY_ACTIVATED", "ALREADY_ACTIVATED", "ALREADY_ACTIVATED"]);
+    assert.equal(await prisma.hoursPackage.count({}), 1);
+    assert.equal(await remaining(userA), 300);
+    const rows = await anomaliesOf(started.paymentId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, "MULTIPLE_PAID");
+    assert.equal(rows[0].transactionIds, "A1,B2");
+  });
+
+  test("חיוב נוסף שמגיע אחרי שהחבילה כבר הופעלה: מזוהה בהתראה (recheck) ולא מזכה שוב", async () => {
+    const { started } = await buy(userA, 5);
+    const second = scripted(provider, new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, paidTransactions: paidTx("A1", "B2") }]]));
+    // בדיקה מהדפדפן (בלי recheck) אינה פונה שוב לספק
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: second })).outcome, "ALREADY_ACTIVATED");
+    assert.equal((await anomaliesOf(started.paymentId)).length, 0);
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: second, recheck: true })).outcome, "ALREADY_ACTIVATED");
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: second, recheck: true })).outcome, "ALREADY_ACTIVATED");
+    assert.equal(await prisma.hoursPackage.count({}), 1);
+    assert.equal(await remaining(userA), 300);
+    assert.equal((await anomaliesOf(started.paymentId)).length, 1);
+  });
+
+  test("החזר אצל הספק (6) על רכישה שטרם הופעלה: לא מופעלת למרות עסקה ששולמה, וחריגה מתועדת", async () => {
+    const started = await pkgs.startPackagePurchase({ userId: userA, hours: 5, clientKey: nextKey(), provider });
+    const refunded = scripted(
+      provider,
+      new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, paidTransactions: paidTx("A1"), refundObserved: true, refundTransactions: paidTx("R1") }]])
+    );
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: refunded })).outcome, "PAYMENT_REVIEW");
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: refunded, recheck: true })).outcome, "PAYMENT_REVIEW");
+    assert.equal(await prisma.hoursPackage.count({}), 0);
+    assert.equal((await payOf(started.paymentId)).status, "PENDING");
+    const rows = await anomaliesOf(started.paymentId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, "REFUNDED");
+    assert.equal(rows[0].transactionIds, "R1");
+  });
+
+  test("החזר אצל הספק אחרי שהחבילה הופעלה: מזוהה בהתראה ומסומן, השעות לא יורדות אוטומטית; החזר של המערכת עצמה אינו חריגה", async () => {
+    const { started } = await buy(userA, 5);
+    const refunded = scripted(
+      provider,
+      new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, paidTransactions: paidTx("A1"), refundObserved: true, refundTransactions: paidTx("R1") }]])
+    );
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: refunded, recheck: true })).outcome, "ALREADY_ACTIVATED");
+    assert.equal(await remaining(userA), 300);
+    assert.equal((await anomaliesOf(started.paymentId)).map((a) => a.kind).join(), "REFUNDED");
+
+    const own = await buy(userA, 5);
+    await prisma.refund.create({ data: { paymentId: own.started.paymentId, amountAgorot: 30000, status: "SUCCEEDED", idempotencyKey: `test-refund-${nextKey()}` } });
+    const ownRefund = scripted(provider, new Map([[own.started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 30000, refundedAgorot: 30000 }]]));
+    await pkgs.finalizePackagePayment({ paymentId: own.started.paymentId, provider: ownRefund, recheck: true });
+    assert.equal((await anomaliesOf(own.started.paymentId)).length, 0);
+  });
+
+  test("תשלום בסכום שגוי דרך ספק שמדווח עסקאות: לא מופעל והרכישה נשארת ממתינה", async () => {
+    const started = await pkgs.startPackagePurchase({ userId: userA, hours: 5, clientKey: nextKey(), provider });
+    const wrong = scripted(provider, new Map([[started.providerPaymentId!, { status: "SUCCEEDED" as const, amountAgorot: 25000, paidTransactions: [{ transactionId: "W1", amountAgorot: 25000 }] }]]));
+    assert.equal((await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider: wrong })).outcome, "AMOUNT_MISMATCH");
+    assert.equal(await prisma.hoursPackage.count({}), 0);
+    assert.equal((await payOf(started.paymentId)).status, "PENDING");
   });
 
   test("אי אפשר לעקוף: סכום שהוספק לא תואם למה שהספק בפועל אישר אינו מפעיל חבילה, ותשלום לא אמיתי לא יוצר יתרה", async () => {

@@ -1,149 +1,760 @@
 {
-  "name": "Caps - Grow Sandbox - Create Payment Link",
-  "flow": [
-    {
-      "id": 1,
-      "module": "gateway:CustomWebHook",
-      "version": 1,
-      "parameters": {
-        "maxResults": 1
-      },
-      "mapper": {},
-      "metadata": {
-        "designer": { "x": 0, "y": 0, "name": "Site: create payment request" }
-      }
-    },
-    {
-      "id": 2,
-      "module": "http:ActionSendData",
-      "version": 3,
-      "parameters": {
-        "handleErrors": false,
-        "useNewZLibDeCompress": true
-      },
-      "mapper": {
-        "url": "https://sandbox.meshulam.co.il/api/light/server/1.0/createPaymentProcess",
-        "serializeUrl": false,
-        "method": "post",
-        "headers": [],
-        "qs": [],
-        "bodyType": "multipart_form_data",
-        "formDataFields": [
-          { "key": "pageCode", "value": "PASTE_GROW_PAGE_CODE", "fieldType": "text" },
-          { "key": "userId", "value": "PASTE_GROW_USER_ID", "fieldType": "text" },
-          { "key": "chargeType", "value": "1", "fieldType": "text" },
-          { "key": "sum", "value": "{{1.amount}}", "fieldType": "text" },
-          { "key": "description", "value": "{{1.description}}", "fieldType": "text" },
-          { "key": "successUrl", "value": "{{1.returnUrl}}", "fieldType": "text" },
-          { "key": "cancelUrl", "value": "{{1.returnUrl}}", "fieldType": "text" },
-          { "key": "notifyUrl", "value": "{{1.notifyUrl}}", "fieldType": "text" },
-          { "key": "pageField[fullName]", "value": "{{1.fullName}}", "fieldType": "text" },
-          { "key": "pageField[phone]", "value": "{{1.phone}}", "fieldType": "text" },
-          { "key": "pageField[email]", "value": "{{1.email}}", "fieldType": "text" },
-          { "key": "cField1", "value": "{{1.reference}}", "fieldType": "text" }
-        ],
-        "parseResponse": true,
-        "authUser": "",
-        "authPass": "",
-        "timeout": "20",
-        "shareCookies": false,
-        "ca": "",
-        "rejectUnauthorized": true,
-        "followRedirect": true,
-        "useQuerystring": false,
-        "gzip": true,
-        "useMtls": false
-      },
-      "metadata": {
-        "designer": { "x": 300, "y": 0, "name": "Grow: createPaymentProcess" }
-      }
-    },
-    {
-      "id": 3,
-      "module": "builtin:BasicRouter",
-      "version": 1,
-      "mapper": null,
-      "metadata": {
-        "designer": { "x": 600, "y": 0 }
-      },
-      "routes": [
+    "name": "Hakapsula | Grow Sandbox - Create Payment Link",
+    "flow": [
         {
-          "flow": [
-            {
-              "id": 4,
-              "module": "gateway:WebhookRespond",
-              "version": 1,
-              "parameters": {},
-              "filter": {
-                "name": "Grow OK",
-                "conditions": [
-                  [
-                    { "a": "{{2.data.status}}", "b": "1", "o": "text:equal" },
-                    { "a": "{{2.data.data.url}}", "o": "exist" }
-                  ]
+            "id": 1,
+            "module": "gateway:CustomWebHook",
+            "version": 1,
+            "parameters": {
+                "maxResults": 1
+            },
+            "mapper": {},
+            "metadata": {
+                "designer": {
+                    "x": 0,
+                    "y": 0
+                },
+                "restore": {},
+                "parameters": [
+                    {
+                        "name": "hook",
+                        "type": "hook:gateway-webhook",
+                        "label": "Webhook",
+                        "required": true
+                    },
+                    {
+                        "name": "maxResults",
+                        "type": "number",
+                        "label": "Maximum number of results"
+                    }
                 ]
-              },
-              "mapper": {
-                "status": "200",
-                "body": "{\"url\":\"{{2.data.data.url}}\",\"processId\":\"{{2.data.data.processId}}\",\"processToken\":\"{{2.data.data.processToken}}\"}",
-                "headers": [
-                  { "key": "Content-Type", "value": "application/json" }
-                ]
-              },
-              "metadata": {
-                "designer": { "x": 900, "y": -150, "name": "Reply: checkout link" }
-              }
             }
-          ]
         },
         {
-          "flow": [
-            {
-              "id": 5,
-              "module": "gateway:WebhookRespond",
-              "version": 1,
-              "parameters": {},
-              "filter": {
-                "name": "Grow error",
-                "conditions": [
-                  [
-                    { "a": "{{2.data.status}}", "b": "1", "o": "text:notequal" }
-                  ],
-                  [
-                    { "a": "{{2.data.data.url}}", "o": "notexist" }
-                  ]
-                ]
-              },
-              "mapper": {
-                "status": "502",
-                "body": "{\"error\":\"grow_create_failed\"}",
-                "headers": [
-                  { "key": "Content-Type", "value": "application/json" }
-                ]
-              },
-              "metadata": {
-                "designer": { "x": 900, "y": 150, "name": "Reply: Grow error" }
-              }
-            }
-          ]
+            "id": 5,
+            "module": "builtin:BasicRouter",
+            "version": 1,
+            "filter": null,
+            "mapper": null,
+            "metadata": {
+                "designer": {
+                    "x": 300,
+                    "y": 0
+                }
+            },
+            "routes": [
+                {
+                    "flow": [
+                        {
+                            "id": 2,
+                            "module": "grow:CreatePaymentLink",
+                            "version": 1,
+                            "parameters": {},
+                            "filter": {
+                                "name": "Validated package purchase",
+                                "conditions": [
+                                    [
+                                        {
+                                            "a": "{{ifempty(1.diagnostic; \"none\")}}",
+                                            "b": "none",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{ifempty(1.test; \"none\")}}",
+                                            "b": "none",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{1.purpose}}",
+                                            "b": "PACKAGE",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{1.currency}}",
+                                            "b": "ILS",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{if(ifempty(1.reference; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+                                            "b": "yes",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{if(ifempty(1.idempotencyKey; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+                                            "b": "yes",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{if(ifempty(1.description; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+                                            "b": "yes",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{if(ifempty(1.fullName; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+                                            "b": "yes",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{if(ifempty(1.phone; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+                                            "b": "yes",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{if(ifempty(1.amount; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+                                            "b": "yes",
+                                            "o": "text:equal"
+                                        },
+                                        {
+                                            "a": "{{if(ifempty(1.returnUrl; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+                                            "b": "yes",
+                                            "o": "text:equal"
+                                        }
+                                    ]
+                                ]
+                            },
+                            "mapper": {
+                                "title": "{{1.description}}",
+                                "cField1": "{{1.reference}}",
+                                "cField2": "{{1.purpose}}",
+                                "isActive": 1,
+                                "products": {
+                                    "data": [
+                                        {
+                                            "name": "{{1.description}}",
+                                            "price": "{{1.amount}}",
+                                            "vatType": 1,
+                                            "quantity": "1"
+                                        }
+                                    ]
+                                },
+                                "notifyUrl": "{{1.notifyUrl}}",
+                                "chargeType": 1,
+                                "customText": {
+                                    "thankPageTitle": "התשלום הועבר לבדיקה",
+                                    "thankPageDescription": "אישור הרכישה יתקבל לאחר אימות התשלום במערכת."
+                                },
+                                "successUrl": "{{1.returnUrl}}",
+                                "sendingMode": 3,
+                                "paymentTypes": {
+                                    "type": "payments",
+                                    "maxOrCustom": "custom",
+                                    "paymentsPaymentNum": "1"
+                                },
+                                "paymentLinkType": 2,
+                                "transactionType": [
+                                    1
+                                ],
+                                "pageFieldSettings": {
+                                    "phone": "{{1.phone}}",
+                                    "fullName": "{{1.fullName}}",
+                                    "invoiceName": 0,
+                                    "invoiceLicenseNumber": 0
+                                }
+                            },
+                            "metadata": {
+                                "designer": {
+                                    "x": 600,
+                                    "y": -300
+                                },
+                                "restore": {
+                                    "expect": {
+                                        "products": {
+                                            "nested": {
+                                                "data": {
+                                                    "mode": "chose",
+                                                    "items": [
+                                                        {
+                                                            "vatType": {
+                                                                "mode": "chose",
+                                                                "label": "Regular VAT"
+                                                            }
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "chargeType": {
+                                            "mode": "chose",
+                                            "label": "Regular Charge"
+                                        },
+                                        "sendingMode": {
+                                            "mode": "chose",
+                                            "label": "none"
+                                        },
+                                        "paymentTypes": {
+                                            "nested": {
+                                                "type": {
+                                                    "mode": "chose",
+                                                    "label": "Payments"
+                                                },
+                                                "maxOrCustom": {
+                                                    "mode": "chose",
+                                                    "label": "Custom Payments"
+                                                }
+                                            }
+                                        },
+                                        "transactionType": {
+                                            "mode": "chose"
+                                        },
+                                        "pageFieldSettings": {
+                                            "nested": {
+                                                "invoiceName": {
+                                                    "mode": "chose",
+                                                    "label": "Optional"
+                                                },
+                                                "invoiceLicenseNumber": {
+                                                    "mode": "chose",
+                                                    "label": "Optional"
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "parameters": [
+                                    {
+                                        "name": "__IMTCONN__",
+                                        "type": "account:grow,grow3",
+                                        "label": "Connection",
+                                        "required": true
+                                    }
+                                ],
+                                "expect": [
+                                    {
+                                        "name": "paymentLinkType",
+                                        "type": "hidden",
+                                        "label": "Payment Link Type"
+                                    },
+                                    {
+                                        "name": "isActive",
+                                        "type": "hidden",
+                                        "label": "Is Active"
+                                    },
+                                    {
+                                        "name": "sendingMode",
+                                        "type": "select",
+                                        "label": "Sending Mode",
+                                        "validate": {
+                                            "enum": [
+                                                1,
+                                                2,
+                                                3
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        "name": "chargeType",
+                                        "type": "select",
+                                        "label": "Charge Type",
+                                        "validate": {
+                                            "enum": [
+                                                1,
+                                                2
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        "name": "successUrl",
+                                        "type": "url",
+                                        "label": "success Url"
+                                    },
+                                    {
+                                        "name": "customText",
+                                        "spec": [
+                                            {
+                                                "name": "thankPageTitle",
+                                                "type": "text",
+                                                "label": "Thank Page Title"
+                                            },
+                                            {
+                                                "name": "thankPageDescription",
+                                                "type": "text",
+                                                "label": "Thank Page Description"
+                                            }
+                                        ],
+                                        "type": "collection",
+                                        "label": "Custom Text"
+                                    },
+                                    {
+                                        "name": "invoiceNotifyUrl",
+                                        "type": "url",
+                                        "label": "Invoice Notify Url"
+                                    },
+                                    {
+                                        "name": "notifyUrl",
+                                        "type": "url",
+                                        "label": "notify Url"
+                                    },
+                                    {
+                                        "name": "title",
+                                        "type": "text",
+                                        "label": "Title",
+                                        "required": true
+                                    },
+                                    {
+                                        "name": "paymentTypes",
+                                        "spec": [
+                                            {
+                                                "name": "type",
+                                                "type": "select",
+                                                "label": "Payment Type",
+                                                "required": true,
+                                                "validate": {
+                                                    "enum": [
+                                                        "payments",
+                                                        "directDebit"
+                                                    ]
+                                                }
+                                            },
+                                            {
+                                                "name": "maxOrCustom",
+                                                "type": "select",
+                                                "label": "Max or Custom",
+                                                "required": true,
+                                                "validate": {
+                                                    "enum": [
+                                                        "max",
+                                                        "custom"
+                                                    ]
+                                                }
+                                            },
+                                            {
+                                                "name": "paymentsPaymentNum",
+                                                "type": "number",
+                                                "label": "Payments Number",
+                                                "required": true,
+                                                "validate": {
+                                                    "max": 12,
+                                                    "min": 1
+                                                }
+                                            }
+                                        ],
+                                        "type": "collection",
+                                        "label": "Payment Types"
+                                    },
+                                    {
+                                        "name": "products",
+                                        "spec": [
+                                            {
+                                                "name": "data",
+                                                "spec": [
+                                                    {
+                                                        "name": "catalogNumber",
+                                                        "type": "text",
+                                                        "label": "Catalog Number"
+                                                    },
+                                                    {
+                                                        "name": "name",
+                                                        "type": "text",
+                                                        "label": "Product Name",
+                                                        "required": true
+                                                    },
+                                                    {
+                                                        "name": "price",
+                                                        "type": "number",
+                                                        "label": "Price",
+                                                        "required": true
+                                                    },
+                                                    {
+                                                        "name": "quantity",
+                                                        "type": "number",
+                                                        "label": "Quantity",
+                                                        "required": true
+                                                    },
+                                                    {
+                                                        "name": "minQuantity",
+                                                        "type": "number",
+                                                        "label": "Minimum Quantity"
+                                                    },
+                                                    {
+                                                        "name": "url",
+                                                        "type": "text",
+                                                        "label": "Product URL"
+                                                    },
+                                                    {
+                                                        "name": "vatType",
+                                                        "type": "select",
+                                                        "label": "VAT Type",
+                                                        "options": [
+                                                            {
+                                                                "label": "Regular VAT",
+                                                                "value": 1
+                                                            },
+                                                            {
+                                                                "label": "VAT Exempt",
+                                                                "value": 3
+                                                            }
+                                                        ],
+                                                        "required": true
+                                                    }
+                                                ],
+                                                "type": "array",
+                                                "label": "Products List",
+                                                "required": true
+                                            }
+                                        ],
+                                        "type": "collection",
+                                        "label": "Products",
+                                        "required": true
+                                    },
+                                    {
+                                        "name": "cField1",
+                                        "type": "text",
+                                        "label": "Custom Field 1"
+                                    },
+                                    {
+                                        "name": "cField2",
+                                        "type": "text",
+                                        "label": "Custom Field 2"
+                                    },
+                                    {
+                                        "name": "cField3",
+                                        "type": "text",
+                                        "label": "Custom Field 3"
+                                    },
+                                    {
+                                        "name": "cField4",
+                                        "type": "text",
+                                        "label": "Custom Field 4"
+                                    },
+                                    {
+                                        "name": "cField5",
+                                        "type": "text",
+                                        "label": "Custom Field 5"
+                                    },
+                                    {
+                                        "name": "cField6",
+                                        "type": "text",
+                                        "label": "Custom Field 6"
+                                    },
+                                    {
+                                        "name": "cField7",
+                                        "type": "text",
+                                        "label": "Custom Field 7"
+                                    },
+                                    {
+                                        "name": "cField8",
+                                        "type": "text",
+                                        "label": "Custom Field 8"
+                                    },
+                                    {
+                                        "name": "cField9",
+                                        "type": "text",
+                                        "label": "Custom Field 9"
+                                    },
+                                    {
+                                        "name": "backgroundColor",
+                                        "type": "color",
+                                        "label": "Background Color"
+                                    },
+                                    {
+                                        "name": "paymentButtonText",
+                                        "type": "text",
+                                        "label": "Payment Button Text",
+                                        "validate": {
+                                            "max": 20
+                                        }
+                                    },
+                                    {
+                                        "name": "buttonColor",
+                                        "type": "color",
+                                        "label": "Button Color"
+                                    },
+                                    {
+                                        "name": "pageFieldSettings",
+                                        "spec": [
+                                            {
+                                                "name": "fullName",
+                                                "type": "text",
+                                                "label": "Full Name",
+                                                "required": true
+                                            },
+                                            {
+                                                "name": "phone",
+                                                "type": "text",
+                                                "label": "Phone",
+                                                "required": true
+                                            },
+                                            {
+                                                "name": "email",
+                                                "type": "email",
+                                                "label": "Email"
+                                            },
+                                            {
+                                                "name": "invoiceName",
+                                                "type": "select",
+                                                "label": "Invoice Name",
+                                                "validate": {
+                                                    "enum": [
+                                                        1,
+                                                        0
+                                                    ]
+                                                }
+                                            },
+                                            {
+                                                "name": "invoiceLicenseNumber",
+                                                "type": "select",
+                                                "label": "Invoice License Number",
+                                                "validate": {
+                                                    "enum": [
+                                                        1,
+                                                        0
+                                                    ]
+                                                }
+                                            }
+                                        ],
+                                        "type": "collection",
+                                        "label": "Page Field Settings"
+                                    },
+                                    {
+                                        "name": "transactionType",
+                                        "type": "select",
+                                        "label": "Transaction Type",
+                                        "multiple": true,
+                                        "validate": {
+                                            "enum": [
+                                                1,
+                                                6,
+                                                5,
+                                                13,
+                                                14,
+                                                15
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "id": 3,
+                            "module": "gateway:WebhookRespond",
+                            "version": 1,
+                            "parameters": {},
+                            "mapper": {
+                                "body": "{\"url\":\"{{2.data.url}}\",\"processId\":\"{{2.data.paymentLinkProcessId}}\",\"processToken\":\"{{2.data.paymentLinkProcessToken}}\"}",
+                                "status": "200",
+                                "headers": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ]
+                            },
+                            "metadata": {
+                                "designer": {
+                                    "x": 900,
+                                    "y": 0
+                                },
+                                "restore": {
+                                    "expect": {
+                                        "headers": {
+                                            "mode": "chose",
+                                            "items": [
+                                                null
+                                            ]
+                                        }
+                                    }
+                                },
+                                "expect": [
+                                    {
+                                        "name": "status",
+                                        "type": "uinteger",
+                                        "label": "Status",
+                                        "required": true,
+                                        "validate": {
+                                            "min": 100
+                                        }
+                                    },
+                                    {
+                                        "name": "body",
+                                        "type": "any",
+                                        "label": "Body"
+                                    },
+                                    {
+                                        "name": "headers",
+                                        "spec": [
+                                            {
+                                                "name": "key",
+                                                "type": "text",
+                                                "label": "Key",
+                                                "required": true,
+                                                "validate": {
+                                                    "max": 256
+                                                }
+                                            },
+                                            {
+                                                "name": "value",
+                                                "type": "text",
+                                                "label": "Value",
+                                                "required": true,
+                                                "validate": {
+                                                    "max": 4096
+                                                }
+                                            }
+                                        ],
+                                        "type": "array",
+                                        "label": "Custom headers",
+                                        "validate": {
+                                            "maxItems": 16
+                                        }
+                                    }
+                                ],
+                                "advanced": true
+                            }
+                        },
+                        {
+                            "id": 4,
+                            "module": "grow:getPaymentLinkInfo",
+                            "version": 1,
+                            "parameters": {},
+                            "mapper": {
+                                "paymentLinkProcessId": "{{2.data.paymentLinkProcessId}}",
+                                "paymentLinkProcessToken": "{{2.data.paymentLinkProcessToken}}"
+                            },
+                            "metadata": {
+                                "designer": {
+                                    "x": 1200,
+                                    "y": 0
+                                },
+                                "restore": {},
+                                "parameters": [
+                                    {
+                                        "name": "__IMTCONN__",
+                                        "type": "account:grow,grow3",
+                                        "label": "Connection",
+                                        "required": true
+                                    }
+                                ],
+                                "expect": [
+                                    {
+                                        "name": "paymentLinkProcessToken",
+                                        "type": "text",
+                                        "label": "Payment link process token"
+                                    },
+                                    {
+                                        "name": "paymentLinkProcessId",
+                                        "type": "text",
+                                        "label": "Payment link process ID"
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "flow": [
+                        {
+                            "id": 6,
+                            "module": "gateway:WebhookRespond",
+                            "version": 1,
+                            "parameters": {},
+                            "filter": {
+                                "name": "Communication diagnostics",
+                                "conditions": [
+                                    [
+                                        {
+                                            "a": "{{1.diagnostic}}",
+                                            "b": "DISCOVER",
+                                            "o": "text:equal"
+                                        }
+                                    ]
+                                ]
+                            },
+                            "mapper": {
+                                "body": "{\"communicationTest\":true}",
+                                "status": "200",
+                                "headers": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ]
+                            },
+                            "metadata": {
+                                "designer": {
+                                    "x": 600,
+                                    "y": 0
+                                },
+                                "restore": {
+                                    "expect": {
+                                        "headers": {
+                                            "mode": "chose",
+                                            "items": [
+                                                null
+                                            ]
+                                        }
+                                    }
+                                },
+                                "expect": [
+                                    {
+                                        "name": "status",
+                                        "type": "uinteger",
+                                        "label": "Status",
+                                        "required": true,
+                                        "validate": {
+                                            "min": 100
+                                        }
+                                    },
+                                    {
+                                        "name": "body",
+                                        "type": "any",
+                                        "label": "Body"
+                                    },
+                                    {
+                                        "name": "headers",
+                                        "spec": [
+                                            {
+                                                "name": "key",
+                                                "type": "text",
+                                                "label": "Key",
+                                                "required": true,
+                                                "validate": {
+                                                    "max": 256
+                                                }
+                                            },
+                                            {
+                                                "name": "value",
+                                                "type": "text",
+                                                "label": "Value",
+                                                "required": true,
+                                                "validate": {
+                                                    "max": 4096
+                                                }
+                                            }
+                                        ],
+                                        "type": "array",
+                                        "label": "Custom headers",
+                                        "validate": {
+                                            "maxItems": 16
+                                        }
+                                    }
+                                ],
+                                "advanced": true
+                            }
+                        }
+                    ]
+                }
+            ]
         }
-      ]
+    ],
+    "metadata": {
+        "instant": true,
+        "version": 1,
+        "scenario": {
+            "roundtrips": 1,
+            "maxErrors": 3,
+            "autoCommit": true,
+            "autoCommitTriggerLast": true,
+            "sequential": false,
+            "slots": null,
+            "confidential": false,
+            "dataloss": false,
+            "dlq": false,
+            "freshVariables": false
+        },
+        "designer": {
+            "orphans": []
+        },
+        "zone": "us1.make.com",
+        "notes": []
     }
-  ],
-  "metadata": {
-    "instant": true,
-    "version": 1,
-    "scenario": {
-      "roundtrips": 1,
-      "maxErrors": 3,
-      "autoCommit": true,
-      "autoCommitTriggerLast": true,
-      "sequential": false,
-      "confidential": true,
-      "dataloss": false,
-      "dlq": false,
-      "freshVariables": false
-    },
-    "designer": { "orphans": [] }
-  }
 }

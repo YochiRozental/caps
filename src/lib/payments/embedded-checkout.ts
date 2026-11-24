@@ -124,7 +124,7 @@ export function canReopenCheckout(p: StoredPurchase, now: number): boolean {
 
 // ───────────────────────────── תוצאת אימות השרת ─────────────────────────────
 
-export type PurchaseResolution = "activated" | "failed" | "cancelled" | "mismatch" | "pending";
+export type PurchaseResolution = "activated" | "failed" | "cancelled" | "mismatch" | "review" | "pending";
 
 /** מיפוי outcome של השרת (finalizePackagePayment). רק PACKAGE_ACTIVATED/ALREADY_ACTIVATED נחשבים הצלחה */
 export function resolvePurchaseOutcome(outcome: unknown): PurchaseResolution {
@@ -138,6 +138,8 @@ export function resolvePurchaseOutcome(outcome: unknown): PurchaseResolution {
       return "cancelled";
     case "AMOUNT_MISMATCH":
       return "mismatch";
+    case "PAYMENT_REVIEW":
+      return "review";
     default:
       return "pending";
   }

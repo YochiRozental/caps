@@ -334,6 +334,7 @@ const RESOLUTION_MESSAGE: Record<Exclude<PurchaseResolution, "activated" | "pend
   failed: { tone: "error", text: "התשלום נכשל ולא בוצע חיוב. לא נוספה יתרה. אפשר לנסות שוב." },
   cancelled: { tone: "warn", text: "התשלום בוטל ולא בוצע חיוב. לא נוספה יתרה." },
   mismatch: { tone: "error", text: "סכום התשלום אינו תואם לחבילה ולכן היא לא הופעלה. אנא צרו קשר." },
+  review: { tone: "warn", text: "התשלום דורש בדיקה של ההנהלה, ולכן החבילה לא הופעלה אוטומטית. ההנהלה קיבלה הודעה ותיצור קשר. אין צורך לשלם שוב." },
 };
 
 interface Offer {

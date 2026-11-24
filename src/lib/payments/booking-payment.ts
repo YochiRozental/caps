@@ -848,11 +848,14 @@ export async function finalizePayment(params: {
   paymentId: string;
   provider: PaymentProvider;
   now?: Date;
+  /** התראת ספק: לבדוק שוב גם רכישת חבילה שכבר הופעלה, לזיהוי חיוב נוסף (ראו finalizePackagePayment) */
+  recheck?: boolean;
 }): Promise<AnyFinalizeResult> {
+  const { recheck, ...rest } = params;
   const payment = await prisma.payment.findUnique({ where: { id: params.paymentId }, select: { purpose: true } });
   if (!payment) throw new PaymentFlowError("התשלום לא נמצא", "NOT_FOUND");
-  if (payment.purpose === "BOOKING") return finalizeBookingPayment(params);
-  if (payment.purpose === "PACKAGE") return finalizePackagePayment(params);
+  if (payment.purpose === "BOOKING") return finalizeBookingPayment(rest);
+  if (payment.purpose === "PACKAGE") return finalizePackagePayment({ ...rest, recheck });
   throw new PaymentFlowError("סוג תשלום לא נתמך", "INVALID");
 }
 
@@ -951,7 +954,7 @@ export async function handlePaymentWebhook(params: {
   });
   if (!payment) return { outcome: "DEFERRED" };
 
-  const finalize = await finalizePayment({ paymentId: payment.id, provider, now });
+  const finalize = await finalizePayment({ paymentId: payment.id, provider, now, recheck: true });
   await markProcessed();
   return { outcome: "PROCESSED", finalize };
 }

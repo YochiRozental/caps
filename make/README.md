@@ -1,11 +1,16 @@
 # תרחישי Make לתשלום ב-Grow (Sandbox)
 
-שני תרחישים שהאתר מדבר איתם כש-`PAYMENT_PROVIDER=make` (ראו `src/lib/payments/make-provider.ts`):
+התרחישים שהאתר מדבר איתם כש-`PAYMENT_PROVIDER=make` (ראו `src/lib/payments/make-provider.ts`):
 
 | קובץ | מה הוא עושה | משתנה סביבה באתר |
 |---|---|---|
-| `1-grow-create-payment-link.blueprint.json` | יוצר קישור תשלום ב-Grow ומחזיר אותו לאתר | `MAKE_PAYMENT_WEBHOOK_URL`, `MAKE_PAYMENT_API_KEY` |
-| `2-grow-verify-payment.blueprint.json` | בודק ב-Grow אם התשלום עבר | `MAKE_VERIFY_WEBHOOK_URL`, `MAKE_VERIFY_API_KEY` |
+| `1-grow-create-payment-link.blueprint.json` | יוצר קישור תשלום ב-Grow ומחזיר אותו לאתר (ייצוא של התרחיש החי, מודול Grow) | `MAKE_PAYMENT_WEBHOOK_URL`, `MAKE_PAYMENT_API_KEY` |
+| `2-grow-verify-payment.blueprint.json` | אימות, מבנה ישן: מחזיר עסקה אחת בלבד (הראשונה). נשמר כגיבוי לחזרה לאחור | `MAKE_VERIFY_WEBHOOK_URL`, `MAKE_VERIFY_API_KEY` |
+| (ללא קובץ, הקמה ידנית: ראו "תרחיש 2 v2" למטה) | אימות, מבנה v2: מחזיר את כל העסקאות של הקישור כמערך JSON, והאתר בוחר את העסקה ששולמה | אותם משתנים (מחליף את תרחיש 2 בכתובת ובמפתח בלבד) |
+
+**ניקוי לפני Git:** הקבצים נשמרים בלי מזהי Webhook, מזהי Connection ושמות חשבון. אין בהם מפתחות, טוקנים או כתובות
+Webhook. אחרי ייבוא בוחרים Webhook ו-Connection מחדש. לפני הוספת ייצוא חדש לריפו: למחוק את `parameters.hook`,
+`parameters.__IMTCONN__`, `metadata.restore.parameters` ו-`metadata.setupValidation`.
 
 ## ייבוא (לכל אחד משני הקבצים)
 
@@ -15,9 +20,8 @@
    - פותחים **Show advanced settings** ← **API Keys** ← **Add** ← מדביקים מפתח אקראי של 24 תווים לפחות.
      את אותו מפתח שמים באתר ב-`MAKE_PAYMENT_API_KEY` (תרחיש 1) או `MAKE_VERIFY_API_KEY` (תרחיש 2).
    - **Save**, ואז **Copy address to clipboard** ← זו הכתובת ל-`MAKE_PAYMENT_WEBHOOK_URL` / `MAKE_VERIFY_WEBHOOK_URL`.
-4. לוחצים על מודול ה-HTTP ומחליפים:
-   - `PASTE_GROW_PAGE_CODE` ← ה-pageCode של Grow Sandbox
-   - `PASTE_GROW_USER_ID` ← ה-userId של Grow Sandbox (רק בתרחיש 1)
+4. בכל מודול Grow (Create Payment Link / Get Payment Link Info) בוחרים ב-**Connection** את החיבור ל-Grow Sandbox.
+   (תרחיש 3 עדיין מבוסס מודול HTTP: שם מחליפים את `PASTE_GROW_PAGE_CODE` ב-pageCode של Grow Sandbox)
 5. שומרים, ומדליקים את התרחיש (מתג **ON** / Immediately).
 
 ## משתני סביבה ב-Staging
@@ -42,9 +46,55 @@ MAKE_PAYMENT_CHECKOUT_HOSTS=sandbox.meshulam.co.il,sandbox.grow.link
 **תרחיש 1** מקבל: `reference, idempotencyKey, amount (שקלים, "500.00"), currency, description, purpose, fullName, phone, email, returnUrl, notifyUrl`
 ומחזיר: `{"url", "processId", "processToken"}`. כשל ב-Grow ← HTTP 502.
 
-**תרחיש 2** מקבל: `reference, processId, processToken`
-ומחזיר: `{"reference", "processId", "currency", "statusCode", "sum", "transactionId"}`.
-`statusCode`: 2 שולם, 9 נדחה, 4 בוטל, 0/ריק עדיין לא שולם. אם יש בתהליך עסקה ששולמה - מוחזרים הסכום ומזהה העסקה שלה.
+**תרחיש 2** מקבל: `reference, processId, processToken` (מזהי קישור התשלום שנשמרו בשרת). מחזיר אחד משני מבנים, והאתר תומך בשניהם:
+
+- **v2 (מומלץ)**: `{"format":"v2", "reference", "processId", "grow": {"transactions": [{"statusCode", "sum", "transactionId", "paymentLinkProcessId"}]}}`.
+  כל עסקה היא אובייקט אחד, כך שהסכום והמזהה תמיד שייכים לאותה עסקה. `paymentLinkProcessId` הוא מזהה הקישור כפי ש-Grow
+  מדווח בעסקה עצמה, והאתר דורש שיהיה זהה למזהה שנשמר בשרת ביצירת הקישור (חובה בעסקה ששולמה ובעסקת החזר). האתר בוחר את
+  העסקה ששולמה, מזהה חיוב מרובה והחזר, ודוחה תשובה לא תקינה. רק ארבעת השדות האלה עוברים: בלי טוקנים, שם, טלפון או כרטיס.
+- **legacy**: `{"reference", "processId", "currency", "statusCode", "sum", "transactionId"}` של עסקה אחת.
+
+`reference` ו-`processId` הם הד של מה שהאתר שלח, ומוודאים שהתשובה שייכת לבקשה. הקשירה לנתון של Grow עצמו היא
+`paymentLinkProcessId` בכל עסקה. ב-Grow אין שדה מטבע בתשובה; הקישור נוצר בשקלים, ושדה `currency` (אם נשלח) חייב להיות ILS.
+
+`statusCode` (Grow parameter-mapping): 2 שולם, 0 לא שולם, 9 נדחה, 4 בוטל לפני שידור, 6 החזר. רק 2 נחשב תשלום. ניסיון
+שנדחה או בוטל **אינו** סוגר את הרכישה: הקישור נשאר פתוח, והרכישה נשארת ממתינה עד שמגיעה עסקה ששולמה. החזר (6) חוסם
+הפעלה אוטומטית גם כשיש בקישור עסקה ששולמה.
+
+**חריגות:** תשלום על רכישה שבוטלה (לא מופעל), יותר מעסקה אחת ששולמה (מופעל פעם אחת) ועסקת החזר (לא מופעל; חבילה שכבר
+הופעלה מסומנת לבדיקה) נשמרים בטבלה `PaymentAnomaly`, ונשלחת התראה במייל ל-`PAYMENT_ALERT_EMAIL` (או לתיבת המערכת).
+התראה שלא נשלחה מנוסה שוב בכל זיהוי חוזר; ניסיון תקופתי שאינו תלוי ב-Grow מתוכנן במשימה B.
+
+## תרחיש 2 v2: הקמה ב-Make (מודולים מובנים, בלי נוסחאות)
+
+כל השדות נבחרים בלחיצה מחלון המיפוי, בלי הקלדת שמות פנימיים. התרחיש הקיים (Verify Payment) לא משתנה.
+
+1. **Scenarios** ← **Create a new scenario** ← **⋯** ← **Import Blueprint** ← `2-grow-verify-payment.blueprint.json` ← **Save**.
+   שם התרחיש: `Hakapsula | Grow Sandbox - Verify Payment v2`.
+2. **Webhooks (1)**: **Add** ← `Hakapsula Staging - Verify Payment v2` ← **Show advanced settings** ← **API Keys** ← **Add**
+   (מפתח חדש של 24 תווים לפחות) ← **Save** ← **Copy address to clipboard**.
+3. **Grow - Get Payment Link Info (2)**: ב-**Connection** בוחרים את החיבור ל-Grow Sandbox. השדות נשארים כמו שהם.
+4. בין מודול Grow למודול **Webhook response** מוסיפים, לפי הסדר:
+   - **Flow Control > Iterator**. Array: מחלון המיפוי של מודול 2 ← `Payment link transactions[]`.
+   - **Flow Control > Iterator**. Array: מחלון המיפוי של ה-Iterator הראשון ← `transactions[]`.
+   - **Flow Control > Array aggregator** (ההגדרה בסעיף 6).
+   - **JSON > Create JSON** (ההגדרה בסעיף 5).
+5. **Create JSON**: Data structure ← **Add** ← שם `caps_verify_transactions` ← **Generator** ← מדביקים את הדוגמה ← **Save**:
+   ```
+   {"transactions":[{"statusCode":"2","sum":"300","transactionId":"1","paymentLinkProcessId":"1"}]}
+   ```
+6. **Array aggregator**: Source module ← ה-**Iterator הראשון** (זה על `Payment link transactions[]`), כדי שכל העסקאות של כל
+   התהליכים יתאספו לפלט אחד. Target structure type ← השדה `transactions` של Create JSON. ממפים בלחיצה מה-Iterator השני:
+   `statusCode` ← Status Code, `sum` ← Sum, `transactionId` ← Transaction ID, `paymentLinkProcessId` ← Payment Link Process ID.
+   חוזרים ל-**Create JSON**: `transactions` ← `Array[]` מה-Array aggregator.
+7. **Webhook response**: Status `200`, Custom header `Content-Type` = `application/json`. ב-Body משאירים את
+   `{{1.reference}}` ו-`{{1.processId}}` כפי שהם, ומחליפים את כל השאר כך שהגוף יהיה:
+   `{"format":"v2","reference":"{{1.reference}}","processId":"{{1.processId}}","grow":` + הפלט של Create JSON (בלחיצה) + `}`
+8. **Save** ← מדליקים (**ON**, Immediately).
+
+**בדיקת תקינות ב-History של v2 אחרי ריצה:** ל-Array aggregator ול-Webhook response יש פלט **אחד** בלבד, ובגוף התשובה
+מופיע `"grow":{"transactions":[...]}` עם ארבעת השדות בלבד. אם השדה `paymentLinkProcessId` שונה ממזהה הקישור, האתר ידחה את
+התשובה (התשלום יישאר ממתין, בלי שינוי מצב) וצריך לבדוק איזה שדה נבחר.
 
 ## התראת שרת (notifyUrl): הפעלת חבילה גם כשהלקוח סגר את הדפדפן
 

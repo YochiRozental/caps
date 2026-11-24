@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { findHoursPackage, packageExpiry, packageMinutes } from "@/lib/payments/pricing";
 import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
-import type { PaymentProvider } from "@/lib/payments/provider";
+import type { PaidTransaction, PaymentProvider, VerifiedPaymentStatus } from "@/lib/payments/provider";
+import { recordPaymentAnomaly } from "@/lib/payments/anomalies";
 import {
   PaymentFlowError,
   audit,
@@ -115,7 +116,52 @@ export type PackageFinalizeOutcome =
   | "PENDING"
   | "PAYMENT_FAILED"
   | "PAYMENT_CANCELLED"
-  | "AMOUNT_MISMATCH";
+  | "AMOUNT_MISMATCH"
+  /** תשלום שדורש בדיקה ידנית (שולם אחרי ביטול, או נמצאה עסקת החזר): החבילה לא הופעלה, החריגה תועדה והנהלה קיבלה התראה */
+  | "PAYMENT_REVIEW";
+
+/**
+ * ההחלטה מה לעשות בתשובת אימות מהספק, לפי המצב השמור של הרכישה. פונקציה טהורה (בלי מסד), כדי שכל צירוף ייבדק.
+ *
+ *  - עסקת החזר אצל הספק (קוד 6 ב-Grow, או סכום שהוחזר): לעולם לא מפעילים אוטומטית, גם אם יש בקישור עסקה ששולמה
+ *    (הצלחה היסטורית של עסקה שהוחזרה אינה הוכחת תשלום). חריגה לטיפול ידני (REVIEW_REFUNDED).
+ *  - רכישה שבוטלה (CANCELLED) לעולם אינה מופעלת אוטומטית. אם התברר ששולמה: חריגה לטיפול ידני (REVIEW).
+ *  - רכישה שנכשלה (FAILED) אינה סגורה לצמיתות: אם התברר שבסוף שולמה בסכום הנכון, היא מופעלת. (כישלון של ניסיון
+ *    אחד אינו סופי, כי קישור התשלום נשאר פתוח לניסיון נוסף)
+ *  - יותר מעסקה אחת ששולמה: מפעילים פעם אחת בלבד ומתעדים חריגה (MULTIPLE_PAID).
+ *  - סכום שאינו תואם לעולם אינו מופעל.
+ */
+export type PackageVerificationDecision =
+  | { action: "ACTIVATE"; multiplePaid: boolean }
+  | { action: "REVIEW_PAID_AFTER_CANCEL" }
+  | { action: "REVIEW_REFUNDED" }
+  | { action: "MARK"; status: "FAILED" | "CANCELLED"; failureCode?: string }
+  | { action: "RETURN"; outcome: "PENDING" | "PAYMENT_FAILED" | "PAYMENT_CANCELLED" | "AMOUNT_MISMATCH" };
+
+export function decidePackageVerification(
+  paymentStatus: "PENDING" | "FAILED" | "CANCELLED",
+  expectedAgorot: number,
+  verified: Pick<VerifiedPaymentStatus, "status" | "amountAgorot" | "failureCode" | "paidTransactions" | "refundObserved"> & {
+    refundedAgorot?: number;
+  }
+): PackageVerificationDecision {
+  if (verified.refundObserved || (verified.refundedAgorot ?? 0) > 0) return { action: "REVIEW_REFUNDED" };
+  const keep = (): PackageVerificationDecision => ({
+    action: "RETURN",
+    outcome: paymentStatus === "FAILED" ? "PAYMENT_FAILED" : paymentStatus === "CANCELLED" ? "PAYMENT_CANCELLED" : "PENDING",
+  });
+  if (verified.status === "SUCCEEDED") {
+    if (paymentStatus === "CANCELLED") return { action: "REVIEW_PAID_AFTER_CANCEL" };
+    if (verified.amountAgorot !== expectedAgorot) return { action: "RETURN", outcome: "AMOUNT_MISMATCH" };
+    return { action: "ACTIVATE", multiplePaid: (verified.paidTransactions?.length ?? 1) > 1 };
+  }
+  if (paymentStatus !== "PENDING") return keep();
+  if (verified.amountAgorot !== expectedAgorot) return { action: "RETURN", outcome: "AMOUNT_MISMATCH" };
+  if (verified.status === "FAILED" || verified.status === "CANCELLED") {
+    return { action: "MARK", status: verified.status, failureCode: verified.failureCode };
+  }
+  return keep();
+}
 
 export interface PackageFinalizeResult {
   outcome: PackageFinalizeOutcome;
@@ -131,10 +177,15 @@ export async function finalizePackagePayment(params: {
   paymentId: string;
   provider: PaymentProvider;
   now?: Date;
+  /**
+   * בדיקה חוזרת גם אחרי שהחבילה כבר הופעלה, כדי לזהות חיוב נוסף על אותה רכישה (חריגה בלבד, לעולם לא זיכוי נוסף).
+   * מופעלת מהתראת שרת של הספק: כל התראה עשויה לבשר על עסקה חדשה
+   */
+  recheck?: boolean;
   /** נקודת הזרקה לבדיקות בלבד */
   beforeApply?: () => Promise<void>;
 }): Promise<PackageFinalizeResult> {
-  const { paymentId, provider, now = new Date(), beforeApply } = params;
+  const { paymentId, provider, now = new Date(), recheck = false, beforeApply } = params;
 
   const payment = await prisma.payment.findUnique({ where: { id: paymentId }, include: { hoursPackage: true } });
   if (!payment || payment.purpose !== "PACKAGE") throw new PaymentFlowError("התשלום לא נמצא", "NOT_FOUND");
@@ -155,28 +206,68 @@ export async function finalizePackagePayment(params: {
   const hours = payment.packageHours;
   if (!hours || !Number.isInteger(payment.amountAgorot) || payment.amountAgorot <= 0) return result("AMOUNT_MISMATCH");
 
-  if (payment.hoursPackage) return result("ALREADY_ACTIVATED", payment.hoursPackage.id);
-  if (!payment.providerPaymentId) return result("PENDING");
-  if (payment.status === "FAILED") return result("PAYMENT_FAILED");
-  if (payment.status === "CANCELLED") return result("PAYMENT_CANCELLED");
-
-  if (payment.status !== "SUCCEEDED") {
-    const verified = await provider.getPaymentStatus(payment.providerPaymentId);
+  const verify = async () => {
+    const verified = await provider.getPaymentStatus(payment.providerPaymentId!);
     if (verified.providerPaymentId !== payment.providerPaymentId) {
       throw new PaymentFlowError("תשובת הספק אינה תואמת לתשלום", "INVALID");
     }
-    if (verified.amountAgorot !== payment.amountAgorot) {
-      await audit(payment.id, "status", "error", "amount_mismatch");
-      return result("AMOUNT_MISMATCH");
+    return verified;
+  };
+  const paidOf = (v: VerifiedPaymentStatus): PaidTransaction[] => v.paidTransactions ?? [];
+  const refundsOf = (v: VerifiedPaymentStatus): PaidTransaction[] =>
+    v.refundTransactions?.length ? v.refundTransactions : [{ transactionId: "refund", amountAgorot: v.refundedAgorot }];
+  const flag = async (kind: "MULTIPLE_PAID" | "PAID_AFTER_CANCEL" | "REFUNDED", transactions: PaidTransaction[]) => {
+    const { created } = await recordPaymentAnomaly({ paymentId: payment.id, kind, transactions, environment: provider.environment, now });
+    if (created) await audit(payment.id, "status", "error", `anomaly_${kind.toLowerCase()}`);
+  };
+
+  if (payment.hoursPackage) {
+    // החבילה כבר הופעלה ולעולם לא תזוכה שוב. בהתראת ספק בודקים רק אם נוסף חיוב על אותה רכישה, כדי לסמן אותו לטיפול
+    if (recheck && payment.providerPaymentId) {
+      const verified = await verify();
+      if (verified.status === "SUCCEEDED" && paidOf(verified).length > 1) await flag("MULTIPLE_PAID", paidOf(verified));
+      // החזר אצל הספק על חבילה שכבר הופעלה: השעות לא יורדות אוטומטית, מסמנים לטיפול. החזר שהמערכת עצמה ביצעה (שורת
+      // Refund במסד) אינו חריגה
+      if ((verified.refundObserved || verified.refundedAgorot > 0) && (await prisma.refund.count({ where: { paymentId: payment.id } })) === 0) {
+        await flag("REFUNDED", refundsOf(verified));
+      }
     }
-    if (verified.status === "PENDING") return result("PENDING");
-    if (verified.status === "FAILED" || verified.status === "CANCELLED") {
-      await prisma.payment.updateMany({
-        where: { id: payment.id, status: "PENDING" },
-        data: { status: verified.status, failureCode: verified.failureCode ?? null },
-      });
-      await audit(payment.id, "status", "ok", verified.status.toLowerCase());
-      return result(verified.status === "FAILED" ? "PAYMENT_FAILED" : "PAYMENT_CANCELLED");
+    return result("ALREADY_ACTIVATED", payment.hoursPackage.id);
+  }
+  if (!payment.providerPaymentId) return result("PENDING");
+
+  // גם רכישה שנכשלה או בוטלה נבדקת שוב מול הספק: רכישה שנכשלה עשויה להיות משולמת בניסיון נוסף באותו קישור, ותשלום
+  // על רכישה שבוטלה חייב להתגלות ולהיות מסומן לטיפול (בלי הפעלה אוטומטית)
+  // העסקאות ששולמו לפי האימות הזה (ריק כשהספק אינו מדווח עליהן), והאם יש יותר מאחת
+  let verifiedPaid: PaidTransaction[] = [];
+  let multiplePaid = false;
+  if (payment.status !== "SUCCEEDED") {
+    const verified = await verify();
+    const decision = decidePackageVerification(payment.status, payment.amountAgorot, verified);
+    switch (decision.action) {
+      case "REVIEW_REFUNDED":
+        await flag("REFUNDED", refundsOf(verified));
+        return result("PAYMENT_REVIEW");
+      case "REVIEW_PAID_AFTER_CANCEL": {
+        const paid = paidOf(verified);
+        await flag("PAID_AFTER_CANCEL", paid.length > 0 ? paid : [{ transactionId: "unknown", amountAgorot: verified.amountAgorot }]);
+        return result("PAYMENT_REVIEW");
+      }
+      case "MARK":
+        await prisma.payment.updateMany({
+          where: { id: payment.id, status: "PENDING" },
+          data: { status: decision.status, failureCode: decision.failureCode ?? null },
+        });
+        await audit(payment.id, "status", "ok", decision.status.toLowerCase());
+        return result(decision.status === "FAILED" ? "PAYMENT_FAILED" : "PAYMENT_CANCELLED");
+      case "RETURN":
+        if (decision.outcome === "AMOUNT_MISMATCH") await audit(payment.id, "status", "error", "amount_mismatch");
+        return result(decision.outcome);
+      case "ACTIVATE":
+        if (payment.status === "FAILED") await audit(payment.id, "status", "ok", "late_success_after_failure");
+        verifiedPaid = paidOf(verified);
+        multiplePaid = decision.multiplePaid;
+        break;
     }
   }
 
@@ -187,6 +278,9 @@ export async function finalizePackagePayment(params: {
       await lockPaymentRow(tx, payment.id);
       const existing = await tx.hoursPackage.findUnique({ where: { paymentId: payment.id } });
       if (existing) return { id: existing.id, created: false };
+      // תחת נעילת השורה: רכישה שבוטלה בינתיים לעולם לא מופעלת אוטומטית
+      const current = await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, select: { status: true } });
+      if (current.status === "CANCELLED") return null;
 
       await tx.payment.updateMany({
         where: { id: payment.id, status: { not: "SUCCEEDED" } },
@@ -206,11 +300,17 @@ export async function finalizePackagePayment(params: {
       });
       return { id: created.id, created: true };
     });
+    if (!pkg) {
+      await flag("PAID_AFTER_CANCEL", verifiedPaid.length > 0 ? verifiedPaid : [{ transactionId: "unknown", amountAgorot: payment.amountAgorot }]);
+      return result("PAYMENT_REVIEW");
+    }
     if (pkg.created) await audit(payment.id, "status", "ok", "package_activated");
+    if (multiplePaid) await flag("MULTIPLE_PAID", verifiedPaid);
     return result(pkg.created ? "PACKAGE_ACTIVATED" : "ALREADY_ACTIVATED", pkg.id);
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = await prisma.hoursPackage.findUniqueOrThrow({ where: { paymentId: payment.id } });
+    if (multiplePaid) await flag("MULTIPLE_PAID", verifiedPaid);
     return result("ALREADY_ACTIVATED", existing.id);
   }
 }

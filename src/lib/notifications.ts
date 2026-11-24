@@ -98,6 +98,29 @@ async function sendApprovalCallViaYemot(phone: string, name: string) {
 export const CONTACT_EMAIL = "hakapsula@gmail.com";
 
 /**
+ * התראה תפעולית להנהלה (למשל חריגת תשלום). נמען: PAYMENT_ALERT_EMAIL אם הוגדר, אחרת תיבת המערכת. זורקת אם SMTP
+ * אינו מוגדר או שהשליחה נכשלה, כדי שהקורא יסמן "לא נשלח" וינסה שוב (שלא כמו מייל האישור, כאן אסור לבלוע כשל).
+ * התוכן נבנה ע"י הקורא וחייב להיות בלי טוקנים, סודות או פרטי כרטיס.
+ */
+export async function sendAdminAlertEmail(alert: { subject: string; text: string }) {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, PAYMENT_ALERT_EMAIL } = process.env;
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS || !SMTP_FROM) throw new Error("smtp_not_configured");
+
+  const transport = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT) || 587,
+    secure: Number(SMTP_PORT) === 465,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  });
+  await transport.sendMail({
+    from: SMTP_FROM,
+    to: PAYMENT_ALERT_EMAIL?.trim() || CONTACT_EMAIL,
+    subject: alert.subject.replace(/[\r\n]/g, " "),
+    text: alert.text,
+  });
+}
+
+/**
  * מעביר הודעה מטופס "צור קשר" לתיבת המייל של המערכת. Reply-To מוגדר לכתובת הפונה כדי שאפשר יהיה לחזור אליו ישירות.
  * משתמש באותה הגדרת SMTP כמו מייל האישור.
  */

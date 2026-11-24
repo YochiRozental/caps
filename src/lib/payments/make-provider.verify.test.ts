@@ -103,16 +103,17 @@ test("שולם דורש קוד 2 + סכום + מזהה עסקה; הסכום המ
   assert.equal((await p.getPaymentStatus(r.providerPaymentId)).status, "SUCCEEDED");
 });
 
-test("נדחה (9) ובוטל (4) ממופים, והטוקן לא דולף", async () => {
+test("נדחה (9), בוטל לפני שידור (4) והחזר (6) אינם סוגרים את הרכישה: נשארת PENDING כי הקישור עדיין פתוח; הטוקן לא דולף", async () => {
   const { p, state } = setup();
   const r = await p.createPaymentRequest(BOOKING_REQ);
-  state.verify = paid({ statusCode: "9" });
-  const f = await p.getPaymentStatus(r.providerPaymentId);
-  assert.equal(f.status, "FAILED");
-  assert.equal(f.amountAgorot, 30000);
-  state.verify = paid({ statusCode: "4" });
-  assert.equal((await p.getPaymentStatus(r.providerPaymentId)).status, "CANCELLED");
-  assert.ok(!JSON.stringify(f).includes("T1"));
+  for (const statusCode of ["9", "4", "6"]) {
+    state.verify = paid({ statusCode });
+    const s = await p.getPaymentStatus(r.providerPaymentId);
+    assert.equal(s.status, "PENDING", statusCode);
+    assert.equal(s.amountAgorot, 30000);
+    assert.equal(s.paidTransactions, undefined);
+    assert.ok(!JSON.stringify(s).includes("T1"));
+  }
 });
 
 test("reference שאינו תואם, מטבע זר, כשל Make, תשובת Accepted, timeout ומזהים חסרים - שגיאה ולא סטטוס", async () => {

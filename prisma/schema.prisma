@@ -229,6 +229,8 @@ model Payment {
   hoursPackage      HoursPackage?
   shiftCharge       ShiftCharge?
   debtSettlement    DebtSettlement?
+  /// חריגות שזוהו באימות (חיוב מרובה, תשלום אחרי ביטול) לטיפול ידני
+  anomalies         PaymentAnomaly[]
   paymentMethodId   String?
   paymentMethod     PaymentMethod?     @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
   failureCode       String?
@@ -306,6 +308,47 @@ model WebhookEvent {
 
   @@unique([provider, eventId])
 }
+
+/// חריגת תשלום שמחייבת טיפול ידני: הלקוח חויב, אבל המערכת לא זיכתה (או זיכתה פעם אחת בלבד) בכוונה.
+/// התיעוד מתמשך (לא רק לוג), והתראה למנהלים נשלחת עד שהצליחה. אין כאן טוקנים או פרטי משלם: מזהי עסקאות וסכומים בלבד
+enum PaymentAnomalyKind {
+  /// יותר מעסקה אחת ששולמה לאותה רכישה: החבילה הופעלה פעם אחת, והחיוב הנוסף דורש החזר/בירור
+  MULTIPLE_PAID
+  /// התקבל תשלום עבור רכישה שבוטלה: החבילה לא הופעלה אוטומטית
+  PAID_AFTER_CANCEL
+  /// נמצאה אצל הספק עסקת החזר: רכישה שטרם הופעלה לא מופעלת, ושעות של חבילה שכבר הופעלה אינן יורדות אוטומטית
+  REFUNDED
+}
+
+enum PaymentAnomalyStatus {
+  OPEN
+  RESOLVED
+}
+
+model PaymentAnomaly {
+  id                 String               @id @default(cuid())
+  paymentId          String
+  payment            Payment              @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  kind               PaymentAnomalyKind
+  /// מזהי העסקאות ששולמו אצל הספק, ממוינים ומופרדים בפסיק. חלק מהמפתח: עסקה חדשה = חריגה חדשה
+  transactionIds     String
+  /// סך כל הסכומים ששולמו בעסקאות האלה (אגורות)
+  paidAgorot         Int
+  status             PaymentAnomalyStatus @default(OPEN)
+  alertAttempts      Int                  @default(0)
+  lastAlertAttemptAt DateTime?
+  /// סוג השגיאה בלבד (לא הודעה מלאה), למשל smtp_not_configured
+  lastAlertError     String?
+  alertSentAt        DateTime?
+  resolvedAt         DateTime?
+  resolvedById       String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@unique([paymentId, kind, transactionIds])
+  @@index([status, createdAt])
+}
+
 
 model HoursPackage {
   id               String         @id @default(cuid())

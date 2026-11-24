@@ -12,6 +12,7 @@ import {
   type PaymentEnvironment,
   type PaymentProvider,
   type PaymentRequestResult,
+  type PaidTransaction,
   type PaymentWebhookEvent,
   type RefundResult,
   type VerifiedPaymentStatus,
@@ -187,6 +188,116 @@ export function flattenGrowNotifyBody(rawBody: string): Record<string, string> {
   return out;
 }
 
+// ───────────────────────────── פענוח תשובת תרחיש האימות ─────────────────────────────
+
+/** קודי סטטוס של Grow לעסקה (parameter-mapping): 2 = שולם, 6 = עסקת החזר. כל השאר (0, 4, 9...) = לא שולם */
+const GROW_PAID = "2";
+const GROW_REFUND = "6";
+const MAX_TRANSACTIONS = 50;
+const TRANSACTION_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const STATUS_CODE = /^\d{1,2}$/;
+
+export interface RefundTransaction {
+  /** חסר כש-Grow לא החזיר מזהה לעסקת ההחזר */
+  transactionId?: string;
+  /** הסכום שהוחזר (ערך מוחלט, אגורות). 0 כשהסכום לא ידוע */
+  amountAgorot: number;
+}
+
+export interface VerifyTransactionsView {
+  /** "v2": כל העסקאות של הקישור, כל עסקה כאובייקט אחד; "legacy": עסקה אחת (התרחיש הישן) */
+  format: "v2" | "legacy";
+  /** קודי הסטטוס של כל העסקאות שהתרחיש ראה */
+  statusCodes: string[];
+  /** העסקאות ששולמו, ייחודיות לפי מזהה. הסכום והמזהה של כל פריט מגיעים מאותו אובייקט עסקה */
+  paid: PaidTransaction[];
+  /** עסקאות החזר (קוד 6). קיום של אחת מהן חוסם הפעלה אוטומטית */
+  refunds: RefundTransaction[];
+}
+
+function malformed(detail: string): PaymentError {
+  return new PaymentError(`תשובת האימות מ-Make אינה תקינה (${detail}) - לא מאושר`);
+}
+
+function scalar(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return value.trim();
+  return undefined;
+}
+
+/**
+ * מפענח את תשובת תרחיש האימות. שני מבנים נתמכים, כדי שחזרה לתרחיש הישן תמיד תעבוד:
+ *
+ *  - v2 (format="v2"): התרחיש מחזיר את כל העסקאות של קישור התשלום כמערך JSON, כל עסקה כאובייקט אחד:
+ *    grow.transactions = [{ statusCode, sum, transactionId, paymentLinkProcessId }]. השדות של עסקה נשארים יחד, כך
+ *    שהסכום והמזהה תמיד שייכים לאותה עסקה. הבחירה נעשית כאן ולא בנוסחת Make.
+ *    קשירה לנתון של Grow: paymentLinkProcessId של כל עסקה (מזהה קישור התשלום כפי ש-Grow מדווח עליו בעסקה עצמה)
+ *    חייב להיות זהה למזהה שנשמר בשרת כשהקישור נוצר. בעסקה ששולמה ובעסקת החזר השדה חובה; בשאר, אם קיים - נבדק.
+ *  - legacy (בלי format): statusCode / sum / transactionId של עסקה אחת, כפי שהתרחיש הישן מחזיר. אין בו קשירה לעסקה.
+ *
+ * תשובה לא תקינה זורקת PaymentError (כשל אימות זמני): שום מצב לא משתנה, והתשלום נשאר ממתין.
+ */
+export function parseVerifyTransactions(data: Record<string, unknown>, expectedProcessId: string): VerifyTransactionsView {
+  if (data.format === "v2") {
+    const grow = data.grow;
+    if (!grow || typeof grow !== "object" || Array.isArray(grow)) throw malformed("grow חסר");
+    const list = (grow as Record<string, unknown>).transactions;
+    // מערך ריק = אין עסקאות. כש-Make לא מצא עסקאות השדה עשוי להיות חסר לגמרי
+    const items = list === undefined || list === null ? [] : list;
+    if (!Array.isArray(items)) throw malformed("transactions אינו מערך");
+    if (items.length > MAX_TRANSACTIONS) throw malformed("יותר מדי עסקאות");
+
+    const statusCodes: string[] = [];
+    const paid = new Map<string, number>();
+    const refunds: RefundTransaction[] = [];
+    for (const item of items) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw malformed("עסקה אינה אובייקט");
+      const tx = item as Record<string, unknown>;
+      const code = scalar(tx.statusCode) ?? "";
+      if (!STATUS_CODE.test(code)) throw malformed("קוד סטטוס חסר או לא תקין");
+      statusCodes.push(code);
+      const linkId = scalar(tx.paymentLinkProcessId) ?? "";
+      const transactionId = scalar(tx.transactionId) ?? "";
+      if (code === GROW_PAID || code === GROW_REFUND) {
+        if (!linkId) throw malformed("עסקה ללא מזהה קישור התשלום של Grow");
+      }
+      if (linkId && linkId !== expectedProcessId) throw malformed("עסקה ששייכת לקישור תשלום אחר");
+      if (transactionId && !TRANSACTION_ID.test(transactionId)) throw malformed("מזהה עסקה לא תקין");
+
+      if (code === GROW_PAID) {
+        const amountAgorot = shekelsToAgorot(scalar(tx.sum));
+        if (!transactionId || amountAgorot <= 0) throw malformed("עסקה ששולמה ללא מזהה או סכום תקין");
+        const seen = paid.get(transactionId);
+        if (seen !== undefined && seen !== amountAgorot) throw malformed("אותה עסקה מופיעה בשני סכומים");
+        paid.set(transactionId, amountAgorot);
+      } else if (code === GROW_REFUND) {
+        refunds.push({ transactionId: transactionId || undefined, amountAgorot: Math.abs(shekelsToAgorot(scalar(tx.sum))) });
+      }
+    }
+    return {
+      format: "v2",
+      statusCodes,
+      paid: [...paid].map(([transactionId, amountAgorot]) => ({ transactionId, amountAgorot })),
+      refunds,
+    };
+  }
+
+  const code = scalar(data.statusCode) ?? "";
+  const legacy = (paid: PaidTransaction[], refunds: RefundTransaction[] = []): VerifyTransactionsView => ({
+    format: "legacy",
+    statusCodes: code ? [code] : [],
+    paid,
+    refunds,
+  });
+  const transactionId = scalar(data.transactionId) ?? "";
+  if (code === GROW_REFUND) return legacy([], [{ transactionId: transactionId || undefined, amountAgorot: Math.abs(shekelsToAgorot(scalar(data.sum))) }]);
+  if (code !== GROW_PAID) return legacy([]);
+  const amountAgorot = shekelsToAgorot(data.sum);
+  if (amountAgorot <= 0 || !transactionId) throw new PaymentError("תשובת אימות 'שולם' ללא סכום תקין או מזהה עסקה - לא מאושר");
+  return legacy([{ transactionId, amountAgorot }]);
+}
+
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
 }
@@ -350,10 +461,17 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
 
   /**
    * אימות סטטוס דרך תרחיש האימות של Make. החוזה (אנחנו מגדירים, ו-Make ממפה אליו מתוצאת Grow): ה-Webhook response
-   * מחזיר JSON עם reference (הד של providerPaymentId ששלחנו), processId (הד של ה-processId ששמרנו), statusCode (קוד הסטטוס של Grow כמחרוזת), sum (שקלים),
-   * transactionId, ואופציונלית currency=ILS. קודי הסטטוס הם המתועדים ב-Grow (parameter-mapping, כמו ב-GrowPaymentProvider):
-   * 2 שולם, 9 נדחה, 4 בוטל, 0 לא שולם. כל קוד אחר/חסר = PENDING, לעולם לא הצלחה. SUCCEEDED דורש גם סכום חיובי ומזהה
-   * עסקה, והסכום המדווח הוא זה שמושווה (ב-booking-payment) לסכום ששמרנו - כך שאי-התאמה לא תאושר אוטומטית.
+   * מחזיר JSON עם reference ו-processId (הד של מה ששלחנו: מוודא שהתשובה שייכת לבקשה הזו), ואת העסקאות במבנה v2
+   * (כל העסקאות, כל אחת קשורה למזהה הקישור כפי ש-Grow מדווח בה) או legacy (עסקה אחת) - ראו parseVerifyTransactions.
+   * מטבע: תשובת Grow אינה כוללת שדה מטבע; הקישור נוצר בשקלים, ושדה currency (אם נשלח) חייב להיות ILS.
+   *
+   * קודי הסטטוס של Grow (parameter-mapping): 2 שולם, 0 לא שולם, 9 נדחה, 4 בוטל לפני שידור, 6 החזר. רק 2 נחשב תשלום.
+   * עסקה שנדחתה או בוטלה אינה סוגרת את הרכישה: קישור התשלום עדיין פתוח, והלקוח יכול לנסות שוב באותו קישור. לכן
+   * כל מצב בלי עסקה ששולמה = PENDING (והרכישה הממתינה נסגרת רק לפי מגבלת זמן, לא לפי ניסיון כושל).
+   * החזר (6) שונה מדחייה: הוא מסומן ב-refundObserved, וההחלטה ב-finalize חוסמת הפעלה ומסמנת לטיפול, גם אם יש
+   * בקישור עסקה ששולמה (הצלחה היסטורית אינה מספיקה).
+   * SUCCEEDED: הסכום שמוחזר הוא של עסקה ששולמה (עדיפות לעסקה שסכומה זהה לסכום שביקשנו), וכל העסקאות ששולמו
+   * מוחזרות ב-paidTransactions ומשויכות לתשלום הזה בלבד. ההשוואה לסכום השמור נעשית ב-finalize.
    */
   async getPaymentStatus(providerPaymentId: string): Promise<VerifiedPaymentStatus> {
     if (!this.cfg.verify) throw new PaymentError("אימות סטטוס תשלום דרך Make אינו מוגדר (תרחיש האימות חסר) - לא מוחזר סטטוס");
@@ -370,25 +488,30 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
     if (echoedProcess !== record.processId) throw new PaymentError("תשובת האימות אינה מזהה את תהליך התשלום שנשמר - לא מאושר");
     if (data.currency !== undefined && data.currency !== "ILS") throw new PaymentError("תשובת האימות כוללת מטבע שאינו ILS");
 
-    const rawCode = typeof data.statusCode === "number" ? String(data.statusCode) : data.statusCode;
-    const code = typeof rawCode === "string" ? rawCode.trim() : "";
-    const base = { providerPaymentId, refundedAgorot: 0 };
-    if (code === "2") {
-      const amountAgorot = shekelsToAgorot(data.sum);
-      const transactionId = typeof data.transactionId === "string" || typeof data.transactionId === "number" ? String(data.transactionId) : "";
-      if (amountAgorot <= 0 || !transactionId) throw new PaymentError("תשובת אימות 'שולם' ללא סכום תקין או מזהה עסקה - לא מאושר");
-      // עסקה אחת לא יכולה לאשר שני תשלומים: משייכים אותה לתשלום הראשון שאומת בה
-      const txKey = `make-tx:${transactionId}`;
-      if (!(await this.store.putIfAbsent<{ paymentId: string }>(txKey, { paymentId: providerPaymentId }))) {
-        const owner = await this.store.get<{ paymentId: string }>(txKey);
-        if (owner?.paymentId !== providerPaymentId) throw new PaymentError("מזהה העסקה כבר שויך לתשלום אחר - לא מאושר");
-      }
-      return { ...base, status: "SUCCEEDED", amountAgorot };
-    }
-    if (code === "9") return { ...base, status: "FAILED", amountAgorot: record.amountAgorot, failureCode: "DENIED" };
-    if (code === "4") return { ...base, status: "CANCELLED", amountAgorot: record.amountAgorot };
-    // "0", חסר או קוד לא מוכר: עדיין לא שולם / לא ידוע - נשאר ממתין
-    return { ...base, status: "PENDING", amountAgorot: record.amountAgorot };
+    const view = parseVerifyTransactions(data, record.processId);
+    const refund =
+      view.refunds.length > 0
+        ? {
+            refundObserved: true,
+            refundTransactions: view.refunds.map((r, i) => ({ transactionId: r.transactionId ?? `refund-${i + 1}`, amountAgorot: r.amountAgorot })),
+          }
+        : {};
+    const base = { providerPaymentId, refundedAgorot: view.refunds.reduce((sum, r) => sum + r.amountAgorot, 0), ...refund };
+    // אין עסקה ששולמה (רשימה ריקה, 0, 9, 4, 6 או קוד לא מוכר): עדיין ממתין, לעולם לא הצלחה ולעולם לא כישלון סופי
+    if (view.paid.length === 0) return { ...base, status: "PENDING", amountAgorot: record.amountAgorot };
+
+    // עסקה אחת לא יכולה לאשר שני תשלומים: כל עסקה ששולמה משויכת לתשלום הראשון שאומת בה, ואם אחת מהן כבר שייכת
+    // לתשלום אחר - לא מאשרים דבר
+    for (const tx of view.paid) await this.claimTransaction(tx.transactionId, providerPaymentId);
+    const chosen = view.paid.find((t) => t.amountAgorot === record.amountAgorot) ?? view.paid[0];
+    return { ...base, status: "SUCCEEDED", amountAgorot: chosen.amountAgorot, paidTransactions: view.paid };
+  }
+
+  private async claimTransaction(transactionId: string, providerPaymentId: string): Promise<void> {
+    const txKey = `make-tx:${transactionId}`;
+    if (await this.store.putIfAbsent<{ paymentId: string }>(txKey, { paymentId: providerPaymentId })) return;
+    const owner = await this.store.get<{ paymentId: string }>(txKey);
+    if (owner?.paymentId !== providerPaymentId) throw new PaymentError("מזהה העסקה כבר שויך לתשלום אחר - לא מאושר");
   }
 
   /** כמו ב-GrowPaymentProvider: אין API לביטול קישור שלא שולם, לכן מוודאים שלא שולם ומתעדים ביטול רק אצלנו. אם האימות נכשל או שולם - זורקים */

@@ -108,6 +108,8 @@ test("רק הפעלת חבילה מאומתת בשרת נחשבת הצלחה", (
   assert.equal(resolvePurchaseOutcome("PACKAGE_ACTIVATED"), "activated");
   assert.equal(resolvePurchaseOutcome("ALREADY_ACTIVATED"), "activated");
   assert.equal(resolvePurchaseOutcome("PAYMENT_FAILED"), "failed");
+  // תשלום על רכישה שבוטלה: לא "הופעל", ולא ממשיך לסקור לנצח
+  assert.equal(resolvePurchaseOutcome("PAYMENT_REVIEW"), "review");
   assert.equal(resolvePurchaseOutcome("PAYMENT_CANCELLED"), "cancelled");
   assert.equal(resolvePurchaseOutcome("AMOUNT_MISMATCH"), "mismatch");
   for (const v of ["PENDING", "SUCCEEDED", "success", "CONFIRMED", undefined, null, 1]) {

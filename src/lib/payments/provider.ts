@@ -51,6 +51,23 @@ export interface VerifiedPaymentStatus {
   refundedAgorot: number;
   failureCode?: string;
   savedPaymentMethod?: SavedPaymentMethod;
+  /**
+   * כל העסקאות ששולמו שהספק ראה עבור התשלום הזה (מזהה + סכום), כשהספק מסוגל לראות את כל הניסיונות. אופציונלי:
+   * ספק שאינו ממלא את השדה נחשב כמי שראה עסקה אחת בלבד. יותר מעסקה אחת = חיוב מרובה, שמזכה פעם אחת ומסומן לטיפול.
+   */
+  paidTransactions?: PaidTransaction[];
+  /**
+   * הספק ראה עסקת החזר עבור התשלום (למשל החזר שבוצע ישירות במסוף הספק), גם אם הסכום לא ידוע. חוסם הפעלה אוטומטית
+   * של מה שנרכש, כי הצלחה היסטורית של עסקה שהוחזרה אינה הוכחת תשלום
+   */
+  refundObserved?: boolean;
+  /** עסקאות ההחזר שהספק ראה (מזהה + סכום), לתיעוד החריגה */
+  refundTransactions?: PaidTransaction[];
+}
+
+export interface PaidTransaction {
+  transactionId: string;
+  amountAgorot: number;
 }
 
 export interface RefundInput {

@@ -1,136 +1,169 @@
 {
-  "name": "Caps - Grow Sandbox - Get Payment Link Info",
-  "flow": [
-    {
-      "id": 1,
-      "module": "gateway:CustomWebHook",
-      "version": 1,
-      "parameters": {
-        "maxResults": 1
-      },
-      "mapper": {},
-      "metadata": {
-        "designer": { "x": 0, "y": 0, "name": "Site: verify payment" }
-      }
-    },
-    {
-      "id": 2,
-      "module": "http:ActionSendData",
-      "version": 3,
-      "parameters": {
-        "handleErrors": false,
-        "useNewZLibDeCompress": true
-      },
-      "mapper": {
-        "url": "https://sandbox.meshulam.co.il/api/light/server/1.0/getPaymentProcessInfo",
-        "serializeUrl": false,
-        "method": "post",
-        "headers": [],
-        "qs": [],
-        "bodyType": "multipart_form_data",
-        "formDataFields": [
-          { "key": "pageCode", "value": "PASTE_GROW_PAGE_CODE", "fieldType": "text" },
-          { "key": "processId", "value": "{{1.processId}}", "fieldType": "text" },
-          { "key": "processToken", "value": "{{1.processToken}}", "fieldType": "text" }
-        ],
-        "parseResponse": true,
-        "authUser": "",
-        "authPass": "",
-        "timeout": "20",
-        "shareCookies": false,
-        "ca": "",
-        "rejectUnauthorized": true,
-        "followRedirect": true,
-        "useQuerystring": false,
-        "gzip": true,
-        "useMtls": false
-      },
-      "metadata": {
-        "designer": { "x": 300, "y": 0, "name": "Grow: getPaymentProcessInfo" }
-      }
-    },
-    {
-      "id": 3,
-      "module": "builtin:BasicRouter",
-      "version": 1,
-      "mapper": null,
-      "metadata": {
-        "designer": { "x": 600, "y": 0 }
-      },
-      "routes": [
+    "name": "Hakapsula | Grow Sandbox - Verify Payment",
+    "flow": [
         {
-          "flow": [
-            {
-              "id": 4,
-              "module": "gateway:WebhookRespond",
-              "version": 1,
-              "parameters": {},
-              "filter": {
-                "name": "Grow OK",
-                "conditions": [
-                  [
-                    { "a": "{{2.data.status}}", "b": "1", "o": "text:equal" }
-                  ]
+            "id": 1,
+            "module": "gateway:CustomWebHook",
+            "version": 1,
+            "parameters": {
+                "maxResults": 1
+            },
+            "mapper": {},
+            "metadata": {
+                "designer": {
+                    "x": 0,
+                    "y": 0
+                },
+                "restore": {},
+                "parameters": [
+                    {
+                        "name": "hook",
+                        "type": "hook:gateway-webhook",
+                        "label": "Webhook",
+                        "required": true
+                    },
+                    {
+                        "name": "maxResults",
+                        "type": "number",
+                        "label": "Maximum number of results"
+                    }
                 ]
-              },
-              "mapper": {
-                "status": "200",
-                "body": "{\"reference\":\"{{1.reference}}\",\"processId\":\"{{1.processId}}\",\"currency\":\"ILS\",\"statusCode\":\"{{ifempty(first(map(2.data.data.transactions; statusCode; statusCode; 2)); last(map(2.data.data.transactions; statusCode)))}}\",\"sum\":\"{{first(map(2.data.data.transactions; sum; statusCode; 2))}}\",\"transactionId\":\"{{first(map(2.data.data.transactions; transactionId; statusCode; 2))}}\"}",
-                "headers": [
-                  { "key": "Content-Type", "value": "application/json" }
-                ]
-              },
-              "metadata": {
-                "designer": { "x": 900, "y": -150, "name": "Reply: payment status" }
-              }
             }
-          ]
         },
         {
-          "flow": [
-            {
-              "id": 5,
-              "module": "gateway:WebhookRespond",
-              "version": 1,
-              "parameters": {},
-              "filter": {
-                "name": "Grow error",
-                "conditions": [
-                  [
-                    { "a": "{{2.data.status}}", "b": "1", "o": "text:notequal" }
-                  ]
+            "id": 2,
+            "module": "grow:getPaymentLinkInfo",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "paymentLinkProcessId": "{{1.processId}}",
+                "paymentLinkProcessToken": "{{1.processToken}}"
+            },
+            "metadata": {
+                "designer": {
+                    "x": 300,
+                    "y": 0
+                },
+                "restore": {},
+                "parameters": [
+                    {
+                        "name": "__IMTCONN__",
+                        "type": "account:grow,grow3",
+                        "label": "Connection",
+                        "required": true
+                    }
+                ],
+                "expect": [
+                    {
+                        "name": "paymentLinkProcessToken",
+                        "type": "text",
+                        "label": "Payment link process token"
+                    },
+                    {
+                        "name": "paymentLinkProcessId",
+                        "type": "text",
+                        "label": "Payment link process ID"
+                    }
                 ]
-              },
-              "mapper": {
-                "status": "502",
-                "body": "{\"error\":\"grow_status_failed\"}",
-                "headers": [
-                  { "key": "Content-Type", "value": "application/json" }
-                ]
-              },
-              "metadata": {
-                "designer": { "x": 900, "y": 150, "name": "Reply: Grow error" }
-              }
             }
-          ]
+        },
+        {
+            "id": 3,
+            "module": "gateway:WebhookRespond",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "body": "{\n  \"reference\":\"{{1.reference}}\",\n  \"processId\":\"{{1.processId}}\",\n  \"currency\":\"ILS\",\n  \"statusCode\":\"{{2.data.paymentLinkTransactions[].transactions[].statusCode}}\",\n  \"sum\":\"{{2.data.paymentLinkTransactions[].transactions[].sum}}\",\n  \"transactionId\":\"{{2.data.paymentLinkTransactions[].transactions[].transactionId}}\"\n}",
+                "status": "200",
+                "headers": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ]
+            },
+            "metadata": {
+                "designer": {
+                    "x": 600,
+                    "y": 0
+                },
+                "restore": {
+                    "expect": {
+                        "headers": {
+                            "mode": "chose",
+                            "items": [
+                                null
+                            ]
+                        }
+                    }
+                },
+                "expect": [
+                    {
+                        "name": "status",
+                        "type": "uinteger",
+                        "label": "Status",
+                        "required": true,
+                        "validate": {
+                            "min": 100
+                        }
+                    },
+                    {
+                        "name": "body",
+                        "type": "any",
+                        "label": "Body"
+                    },
+                    {
+                        "name": "headers",
+                        "spec": [
+                            {
+                                "name": "key",
+                                "type": "text",
+                                "label": "Key",
+                                "required": true,
+                                "validate": {
+                                    "max": 256
+                                }
+                            },
+                            {
+                                "name": "value",
+                                "type": "text",
+                                "label": "Value",
+                                "required": true,
+                                "validate": {
+                                    "max": 4096
+                                }
+                            }
+                        ],
+                        "type": "array",
+                        "label": "Custom headers",
+                        "validate": {
+                            "maxItems": 16
+                        }
+                    }
+                ],
+                "advanced": true
+            }
         }
-      ]
+    ],
+    "metadata": {
+        "instant": true,
+        "version": 1,
+        "scenario": {
+            "roundtrips": 1,
+            "maxErrors": 3,
+            "autoCommit": true,
+            "autoCommitTriggerLast": true,
+            "sequential": false,
+            "slots": null,
+            "confidential": false,
+            "dataloss": false,
+            "dlq": false,
+            "freshVariables": false
+        },
+        "designer": {
+            "orphans": []
+        },
+        "zone": "us1.make.com",
+        "notes": []
     }
-  ],
-  "metadata": {
-    "instant": true,
-    "version": 1,
-    "scenario": {
-      "roundtrips": 1,
-      "maxErrors": 3,
-      "autoCommit": true,
-      "autoCommitTriggerLast": true,
-      "sequential": false,
-      "confidential": true,
-      "dataloss": false,
-      "dlq": false,
-      "freshVariables": false
-    },
-    "designer": { "orphans": [] }
-  }
 }
