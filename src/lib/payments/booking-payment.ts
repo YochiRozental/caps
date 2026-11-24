@@ -918,10 +918,12 @@ export async function handlePaymentWebhook(params: {
   provider: PaymentProvider;
   rawBody: string;
   headers: Record<string, string | undefined>;
+  /** פרמטרי כתובת ההתראה (לספק שחותם את הכתובת עצמה) */
+  query?: Record<string, string>;
   now?: Date;
 }): Promise<{ outcome: WebhookOutcome; finalize?: AnyFinalizeResult }> {
-  const { provider, rawBody, headers, now } = params;
-  const event = await provider.parseWebhook({ rawBody, headers });
+  const { provider, rawBody, headers, query, now } = params;
+  const event = await provider.parseWebhook({ rawBody, headers, query });
 
   try {
     await prisma.webhookEvent.create({ data: { provider: provider.name, eventId: event.eventId, type: event.type } });

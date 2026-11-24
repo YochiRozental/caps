@@ -46,6 +46,9 @@ export interface PaymentEnv {
   MAKE_VERIFY_WEBHOOK_URL?: string;
   MAKE_VERIFY_API_KEY?: string;
   MAKE_PAYMENT_RETURN_BASE_URL?: string;
+  /** אופציונלי: תרחיש Make שמבצע approveTransaction ב-Grow אחרי התראת שרת. בלעדיו ההתראה עדיין מפעילה חבילה */
+  MAKE_APPROVE_WEBHOOK_URL?: string;
+  MAKE_APPROVE_API_KEY?: string;
   /** true רק ב-Staging, אחרי שתרחיש האימות נבדק מול Grow Sandbox. בלי זה ספק Make חסום */
   MAKE_VERIFICATION_CONFIRMED?: string;
   /** נקראים ע"י שער ה-Staging: ספק Make עולה רק כששער Staging פעיל */
@@ -180,6 +183,11 @@ function buildMakeProvider(env: PaymentEnv): PaymentProvider {
     allowedCheckoutHosts: checkoutHosts,
     verify: { webhookUrl: env.MAKE_VERIFY_WEBHOOK_URL!, apiKey: env.MAKE_VERIFY_API_KEY! },
     returnBaseUrl: env.MAKE_PAYMENT_RETURN_BASE_URL!,
+    // תרחיש האישור (approveTransaction) אופציונלי: מוגדר רק אם שני המשתנים תקינים. אחרת מדלגים עליו בשקט
+    approve:
+      isHttpsUrl(env.MAKE_APPROVE_WEBHOOK_URL) && (env.MAKE_APPROVE_API_KEY?.length ?? 0) >= MIN_MAKE_API_KEY_LENGTH
+        ? { webhookUrl: env.MAKE_APPROVE_WEBHOOK_URL!, apiKey: env.MAKE_APPROVE_API_KEY! }
+        : undefined,
   });
 }
 

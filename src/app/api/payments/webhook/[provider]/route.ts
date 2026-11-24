@@ -18,7 +18,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
   });
 
   try {
-    const result = await handlePaymentWebhook({ provider, rawBody, headers });
+    const query = Object.fromEntries(new URL(request.url).searchParams);
+    const result = await handlePaymentWebhook({ provider, rawBody, headers, query });
     // DEFERRED: התשלום עדיין לא ידוע אצלנו; 202 מבקש מהספק לנסות שוב
     return NextResponse.json({ outcome: result.outcome }, { status: result.outcome === "DEFERRED" ? 202 : 200 });
   } catch (err) {

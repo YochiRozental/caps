@@ -95,9 +95,17 @@ export function isValidServiceKey(env: StagingGateEnv): boolean {
   return !!env.STAGING_GATE_SERVICE_KEY && env.STAGING_GATE_SERVICE_KEY.length >= MIN_SERVICE_KEY_LENGTH;
 }
 
-/** נתיבים שתמיד מותרים כש-השער פעיל: מנגנון ההתחברות לשער עצמו, ונכסים ציבוריים לא-רגישים */
+/**
+ * התראת השרת של Grow (notifyUrl) לספק Make. Grow שולח POST בלי עוגייה ובלי כותרות מותאמות, ולכן אינו יכול לעבור את
+ * השער. הנתיב מאמת את עצמו: כל בקשה נדחית אם חתימת ה-HMAC בכתובת אינה תקינה (verifyNotifySignature ב-make-provider),
+ * וגם בקשה חתומה רק מפעילה אימות מחדש מול Grow. התאמה מדויקת לנתיב אחד בלבד, לא תבנית.
+ */
+export const SIGNED_NOTIFY_PATH = "/api/payments/webhook/make-grow";
+
+/** נתיבים שתמיד מותרים כש-השער פעיל: מנגנון ההתחברות לשער עצמו, נכסים ציבוריים לא-רגישים, והתראה חתומה מ-Grow */
 export function isExemptPath(pathname: string): boolean {
   if (pathname === LOGIN_PAGE_PATH || pathname === LOGIN_API_PATH) return true;
+  if (pathname === SIGNED_NOTIFY_PATH) return true;
   return PUBLIC_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 

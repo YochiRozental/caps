@@ -88,6 +88,8 @@ export interface WebhookInput {
   /** גוף הבקשה הגולמי, בדיוק כפי שהתקבל (החתימה מחושבת עליו) */
   rawBody: string;
   headers: Record<string, string | undefined>;
+  /** פרמטרי הכתובת שאליה נשלחה ההתראה (לספק שחותם את כתובת ההתראה עצמה, כמו Make/Grow). אופציונלי */
+  query?: Record<string, string>;
 }
 
 /** אירוע webhook שעבר אימות חתימה. הוא רק טריגר: את הסטטוס הסופי שולפים עם getPaymentStatus */

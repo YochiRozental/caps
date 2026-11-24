@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { prisma as defaultDb } from "@/lib/prisma";
 import { agorotToShekels, assertFullName, normalizeIsraeliPhone, shekelsToAgorot } from "@/lib/payments/grow-provider";
@@ -15,6 +15,7 @@ import {
   type PaymentWebhookEvent,
   type RefundResult,
   type VerifiedPaymentStatus,
+  type WebhookInput,
 } from "@/lib/payments/provider";
 
 /**
@@ -24,7 +25,7 @@ import {
  * מה שמומש: יצירת קישור תשלום בלבד. כל השאר נכשל במפורש ובמכוון (ללא מעקף ל-Grow ישיר):
  *  - getPaymentStatus: אין עדיין מבנה תשובה מאומת של "Get Payment Link Info" דרך Make, לכן לעולם לא מחזירים
  *    SUCCEEDED (או כל סטטוס) בלי אימות אמיתי. הודעת הצלחה מהדפדפן/Notify URL אינה הוכחת תשלום.
- *  - parseWebhook: אין עדיין חתימה/סוד מאומתים להתראות נכנסות.
+ *  - parseWebhook: התראת שרת מ-Grow לכתובת שהאתר חתם (HMAC), טריגר לאימות מחדש בלבד (ראו parseWebhook).
  *  - refund / chargeSavedMethod / cancelPayment / שמירת כרטיס: אין תרחיש Make מתאים.
  * הספק חסום להפעלה דרך PAYMENT_PROVIDER כל עוד MAKE_PROVIDER_VERIFICATION_READY=false (ראו config.ts).
  */
@@ -53,6 +54,11 @@ export interface MakeConfig {
   verify?: { webhookUrl: string; apiKey: string };
   /** בסיס HTTPS של האתר לבניית כתובת החזרה אחרי תשלום (ההחזרה אינה הוכחת תשלום - האימות רק בשרת) */
   returnBaseUrl?: string;
+  /**
+   * תרחיש approveTransaction (אופציונלי). לפי Grow: האישור אינו משנה את סטטוס העסקה, ובלעדיו Grow שולח את ההתראה
+   * שוב עד 5 פעמים. לכן הוא best-effort בלבד ואינו תנאי להפעלת חבילה
+   */
+  approve?: { webhookUrl: string; apiKey: string };
   environment: PaymentEnvironment;
   /**
    * דומיינים מאושרים לקישור התשלום (התאמה למארח עצמו או לתת-דומיין שלו). חובה ולא ריק: אין ברירת מחדל, כי דומייני
@@ -128,6 +134,59 @@ export function parseAllowedHosts(raw: string | undefined): string[] {
   return (raw ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
 }
 
+// ───────────────────────────── התראת שרת מ-Grow (notifyUrl) ─────────────────────────────
+
+/** נתיב ה-webhook של הספק באתר (src/app/api/payments/webhook/[provider]) */
+export const MAKE_NOTIFY_PATH = "/api/payments/webhook/make-grow";
+const PROVIDER_REF = /^make:[0-9a-f]{32}$/;
+
+/**
+ * חתימת כתובת ההתראה. Grow אינו חותם התראות (לפי התיעוד אין סוד/חתימה), ולכן האתר חותם בעצמו את הכתובת שהוא נותן
+ * ל-Grow: HMAC על מזהה התשלום, במפתח שנגזר ממפתח ה-API של Make (קיים רק בשרת וב-Make). התראה בלי חתימה תקינה נדחית.
+ * גם התראה חתומה היא טריגר בלבד: הסטטוס נשלף מחדש מ-Grow דרך תרחיש האימות לפני כל זיכוי.
+ */
+export function signNotifyRef(ref: string, apiKey: string): string {
+  const key = createHash("sha256").update(`caps-grow-notify-v1:${apiKey}`).digest();
+  return createHmac("sha256", key).update(ref).digest("hex");
+}
+
+export function verifyNotifySignature(ref: string, sig: string, apiKey: string): boolean {
+  if (!PROVIDER_REF.test(ref) || !/^[0-9a-f]{64}$/.test(sig)) return false;
+  return timingSafeEqual(Buffer.from(signNotifyRef(ref, apiKey), "hex"), Buffer.from(sig, "hex"));
+}
+
+/**
+ * גוף התראת Grow: JSON ({data:{...}}) או POST של טופס, כולל מפתחות בסגנון data[transactionId] ו-
+ * data[customFields][cField1]. מחזיר מילון שטוח (שם השדה הפנימי -> ערך). גוף שלא ניתן לפענח -> {} (לא זורקים:
+ * הגוף אינו מקור אמת, רק בדיקת עקביות נוספת)
+ */
+export function flattenGrowNotifyBody(rawBody: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const put = (k: string, v: unknown) => {
+    if ((typeof v === "string" || typeof v === "number") && String(v).length <= 512) out[k] = String(v);
+  };
+  const trimmed = rawBody.trim().slice(0, 64 * 1024);
+  if (trimmed.startsWith("{")) {
+    try {
+      const json = JSON.parse(trimmed) as { data?: Record<string, unknown> } & Record<string, unknown>;
+      const data = json.data && typeof json.data === "object" ? json.data : json;
+      for (const [k, v] of Object.entries(data)) {
+        if (k === "customFields" && v && typeof v === "object") for (const [ck, cv] of Object.entries(v)) put(ck, cv);
+        else put(k, v);
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+  for (const [rawKey, v] of new URLSearchParams(trimmed)) {
+    const m = /^(?:data\[)?([A-Za-z0-9_]+)\]?(?:\[([A-Za-z0-9_]+)\])?$/.exec(rawKey);
+    if (!m) continue;
+    put(m[1] === "customFields" && m[2] ? m[2] : m[1], v);
+  }
+  return out;
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
 }
@@ -193,6 +252,8 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
         phone: customer.phone,
         email: customer.email,
         returnUrl: this.returnUrlFor(input),
+        // התראת שרת ישירה מ-Grow: מפעילה את החבילה גם אם הלקוח סגר את הדפדפן. תרחיש 1 צריך להעביר אותה ל-Grow
+        notifyUrl: this.notifyUrlFor(providerPaymentId),
       });
       const checkoutUrl = parseCheckoutUrl(data.url, this.cfg.allowedCheckoutHosts);
       const record: MakePaymentRecord = {
@@ -219,6 +280,14 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
     // חבילות: דף החזרה ייעודי שעובד גם בתוך חלונית התשלום (iframe) - הוא רק מבקש מהחלון המארח לבדוק סטטוס בשרת
     if (base && input.metadata?.packageHours) return `${base}${PACKAGE_RETURN_PATH}`;
     return input.returnUrl;
+  }
+
+  /** כתובת התראה חתומה לתשלום הזה. רק כשיש בסיס HTTPS של האתר (Grow דורש כתובת חיצונית) */
+  notifyUrlFor(providerPaymentId: string): string | undefined {
+    const base = this.cfg.returnBaseUrl?.replace(/[/]+$/, "");
+    if (!base || !base.startsWith("https://")) return undefined;
+    const qs = new URLSearchParams({ ref: providerPaymentId, sig: signNotifyRef(providerPaymentId, this.cfg.apiKey) });
+    return `${base}${MAKE_NOTIFY_PATH}?${qs.toString()}`;
   }
 
   private async postToMake(
@@ -336,7 +405,42 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
     throw new PaymentError("חיוב אמצעי תשלום שמור אינו נתמך דרך Make");
   }
 
-  async parseWebhook(): Promise<PaymentWebhookEvent> {
-    throw new WebhookVerificationError("קליטת התראות דרך Make טרם מומשה - אין אימות חתימה");
+  /**
+   * התראת שרת מ-Grow (notifyUrl). אימות: חתימת HMAC שהאתר שם בכתובת עצמה (Grow לא חותם). בדיקות עקביות: אם הגוף
+   * כולל cField1/processId - חייבים להתאים לתשלום השמור. האירוע הוא טריגר בלבד: handlePaymentWebhook מאמת מחדש
+   * דרך תרחיש האימות (getPaymentStatus) ורק אז מזכה, פעם אחת (HoursPackage.paymentId ייחודי).
+   * eventId ייחודי לכל משלוח בכוונה: Grow שולח שוב עד 5 פעמים, וכל משלוח צריך לגרום לאימות נוסף (למקרה שהראשון
+   * הגיע לפני ש-Grow עדכן סטטוס). זה בטוח כי האימות והזיכוי אידמפוטנטיים.
+   */
+  async parseWebhook(input: WebhookInput): Promise<PaymentWebhookEvent> {
+    const ref = input.query?.ref ?? "";
+    const sig = input.query?.sig ?? "";
+    if (!verifyNotifySignature(ref, sig, this.cfg.apiKey)) throw new WebhookVerificationError("חתימת כתובת ההתראה אינה תקינה");
+    const record = await this.store.get<MakePaymentRecord>(`make-payment:${ref}`);
+    if (!record) throw new WebhookVerificationError("התראה לתשלום שאינו מוכר בשרת");
+
+    const body = flattenGrowNotifyBody(input.rawBody);
+    if (body.cField1 && body.cField1 !== ref) throw new WebhookVerificationError("ההתראה מתייחסת לתשלום אחר (cField1)");
+    if (body.processId && record.processId && body.processId !== record.processId) {
+      throw new WebhookVerificationError("ההתראה מתייחסת לתהליך תשלום אחר (processId)");
+    }
+    await this.approveBestEffort(ref, body);
+    return { eventId: `notify:${ref}:${randomUUID()}`, type: "payment.updated", providerPaymentId: ref };
+  }
+
+  /**
+   * approveTransaction דרך תרחיש Make ייעודי (אם הוגדר). לפי Grow: נשלח pageCode (ב-Make) + כל נתוני ההתראה. אינו משנה
+   * את סטטוס העסקה ואינו תנאי לזיכוי, ולכן כשל כאן נבלע. מדלגים כשאין transactionId (התראה חלקית/בדיקה)
+   */
+  private async approveBestEffort(ref: string, body: Record<string, string>): Promise<void> {
+    if (!this.cfg.approve || !body.transactionId) return;
+    const doneKey = `make-approved:${body.transactionId}`;
+    if ((await this.store.get<boolean>(doneKey).catch(() => undefined)) === true) return;
+    try {
+      const res = await this.postToMake({ ...body, reference: ref }, this.cfg.approve);
+      if (res.status === "1" || res.status === 1 || res.approved === true) await this.store.put(doneKey, true);
+    } catch {
+      // best-effort: Grow ישלח את ההתראה שוב, ואז ננסה לאשר שוב
+    }
   }
 }
