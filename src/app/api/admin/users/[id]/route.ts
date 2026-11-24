@@ -16,7 +16,9 @@ export async function PATCH(
   const role = body?.role as "ADMIN" | "CLIENT" | undefined;
   const status = body?.status as "PENDING" | "APPROVED" | "BLOCKED" | undefined;
 
-  if (role === undefined && status === undefined) {
+  const gender = body?.gender as "MALE" | "FEMALE" | undefined;
+
+  if (role === undefined && status === undefined && gender === undefined) {
     return NextResponse.json({ error: "אין נתונים לעדכון" }, { status: 400 });
   }
   if (role !== undefined && role !== "ADMIN" && role !== "CLIENT") {
@@ -24,6 +26,9 @@ export async function PATCH(
   }
   if (status !== undefined && !["PENDING", "APPROVED", "BLOCKED"].includes(status)) {
     return NextResponse.json({ error: "סטטוס לא תקין" }, { status: 400 });
+  }
+  if (gender !== undefined && gender !== "MALE" && gender !== "FEMALE") {
+    return NextResponse.json({ error: "מגדר לא תקין" }, { status: 400 });
   }
   if (id === session.user.id && (role === "CLIENT" || status === "BLOCKED")) {
     return NextResponse.json({ error: "לא ניתן לבצע פעולה זו על החשבון של עצמך" }, { status: 400 });
@@ -41,8 +46,8 @@ export async function PATCH(
   const user = await prisma.$transaction(async (tx) => {
     const updated = await tx.user.update({
       where: { id },
-      data: { ...(role !== undefined && { role }), ...(status !== undefined && { status }) },
-      select: { id: true, name: true, email: true, phone: true, role: true, status: true },
+      data: { ...(role !== undefined && { role }), ...(status !== undefined && { status }), ...(gender !== undefined && { gender }) },
+      select: { id: true, name: true, email: true, phone: true, role: true, status: true, gender: true },
     });
     if (blockChange) {
       await writeAudit(tx, {

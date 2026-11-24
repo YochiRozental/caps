@@ -21,6 +21,7 @@ type UserRow = {
   name: string;
   email: string | null;
   phone: string | null;
+  gender: "MALE" | "FEMALE" | null;
   role: "CLIENT" | "ADMIN";
   status: "PENDING" | "APPROVED" | "BLOCKED";
   createdAt: string;
@@ -81,6 +82,7 @@ const EMPTY_FORM = {
   phone: "",
   idNumber: "",
   password: "",
+  gender: "",
   role: "CLIENT",
   status: "APPROVED",
 };
@@ -132,7 +134,7 @@ export default function AdminUsersPage() {
     const res = await fetch("/api/admin/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, gender: form.gender || undefined }),
     });
     setCreating(false);
     if (!res.ok) {
@@ -148,6 +150,22 @@ export default function AdminUsersPage() {
     });
     setForm(EMPTY_FORM);
     setShowForm(false);
+    load();
+  }
+
+  async function setGender(user: UserRow, gender: "MALE" | "FEMALE") {
+    setSavingId(user.id);
+    const res = await fetch(`/api/admin/users/${user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gender }),
+    });
+    setSavingId(null);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error ?? "שגיאה בעדכון המגדר");
+      return;
+    }
     load();
   }
 
@@ -314,6 +332,16 @@ export default function AdminUsersPage() {
             className="field"
           />
           <select
+            value={form.gender}
+            onChange={(e) => setForm({ ...form, gender: e.target.value })}
+            aria-label="מגדר"
+            className="field"
+          >
+            <option value="">מגדר (לא הוגדר)</option>
+            <option value="MALE">זכר</option>
+            <option value="FEMALE">נקבה</option>
+          </select>
+          <select
             value={form.role}
             onChange={(e) => setForm({ ...form, role: e.target.value })}
             aria-label="תפקיד"
@@ -381,6 +409,7 @@ export default function AdminUsersPage() {
                   sortKey="appointments"
                   state={filterState}
                 />
+                <th>מגדר</th>
                 <SortableTh label="תפקיד" sortKey="role" state={filterState} />
                 <SortableTh
                   label="סטטוס"
@@ -416,6 +445,25 @@ export default function AdminUsersPage() {
                     {joinDateFmt.format(new Date(u.createdAt))}
                   </td>
                   <td className="tabular-nums">{u._count.appointments}</td>
+                  <td>
+                    <select
+                      value={u.gender ?? ""}
+                      onChange={(e) =>
+                        setGender(u, e.target.value as "MALE" | "FEMALE")
+                      }
+                      disabled={savingId === u.id}
+                      aria-label={`מגדר של ${u.name}`}
+                      className="field py-1 text-sm"
+                    >
+                      {!u.gender && (
+                        <option value="" disabled>
+                          לא הוגדר
+                        </option>
+                      )}
+                      <option value="MALE">זכר</option>
+                      <option value="FEMALE">נקבה</option>
+                    </select>
+                  </td>
                   <td>
                     <span
                       className={`badge ${
