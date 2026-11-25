@@ -6,6 +6,8 @@ import { Icon } from "@/components/ui";
 // הגדרות הבאנר העליון — כאן בלבד. להסרה: ANNOUNCEMENT_ENABLED = false.
 export const ANNOUNCEMENT_ENABLED = true;
 export const ANNOUNCEMENT_TEXT = "האתר בהרצה. תודה על הסבלנות!";
+export const ANNOUNCEMENT_CONTACT_TEXT = "ניתן ליצור קשר במספר";
+export const ANNOUNCEMENT_PHONE = "0534841223";
 
 export function AnnouncementBar() {
   const pathname = usePathname();
@@ -24,7 +26,16 @@ export function AnnouncementBar() {
           aria-hidden="true"
           className="w-4 h-4 shrink-0 text-bronze-500"
         />
-        <span>{ANNOUNCEMENT_TEXT}</span>
+        <span>
+          {ANNOUNCEMENT_TEXT} {ANNOUNCEMENT_CONTACT_TEXT}{" "}
+          <a
+            href={`tel:${ANNOUNCEMENT_PHONE}`}
+            dir="ltr"
+            className="font-semibold hover:text-brand-800"
+          >
+            {ANNOUNCEMENT_PHONE}
+          </a>
+        </span>
       </div>
     </div>
   );
