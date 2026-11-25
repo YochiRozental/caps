@@ -3,6 +3,7 @@ import { findHoursPackage, packageExpiry, packageMinutes } from "@/lib/payments/
 import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
 import type { PaidTransaction, PaymentProvider, VerifiedPaymentStatus } from "@/lib/payments/provider";
 import { recordPaymentAnomaly } from "@/lib/payments/anomalies";
+import { timeStep } from "@/lib/payments/timing";
 import {
   PaymentFlowError,
   audit,
@@ -40,13 +41,13 @@ export async function startPackagePurchase(params: {
 }): Promise<StartedPackagePurchase> {
   const { userId, hours, clientKey, provider } = params;
 
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true, status: true } });
+  const user = await timeStep("db.user", () => prisma.user.findUnique({ where: { id: userId }, select: { role: true, status: true } }));
   if (!user) throw new PaymentFlowError("המשתמש לא נמצא", "NOT_FOUND");
   // התפקיד והסטטוס נבדקים מול המסד ולא מול ה-session
   if (user.role !== "CLIENT" || user.status !== "APPROVED") {
     throw new PaymentFlowError("רק לקוח מאושר רשאי לרכוש חבילה", "FORBIDDEN");
   }
-  const pricing = await getRegularPricing();
+  const pricing = await timeStep("db.pricing", () => getRegularPricing());
   const option = findHoursPackage(hours, hoursPackageOptions(pricing));
   if (!option) throw new PaymentFlowError("חבילה לא קיימת", "INVALID");
   if (!CLIENT_KEY.test(clientKey)) throw new PaymentFlowError("מפתח הבקשה אינו תקין", "INVALID");
@@ -54,7 +55,7 @@ export async function startPackagePurchase(params: {
   const idempotencyKey = `package:${userId}:${clientKey}`;
   let payment;
   try {
-    payment = await prisma.payment.create({
+    payment = await timeStep("db.payment", () => prisma.payment.create({
       data: {
         userId,
         purpose: "PACKAGE",
@@ -65,7 +66,7 @@ export async function startPackagePurchase(params: {
         provider: provider.name,
         idempotencyKey,
       },
-    });
+    }));
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     payment = await prisma.payment.findUniqueOrThrow({ where: { idempotencyKey } });
@@ -85,20 +86,24 @@ export async function startPackagePurchase(params: {
   }
 
   // אידמפוטנטי מול הספק לפי אותו מפתח: קריסה לפני שמירת המזהה לא תיצור תשלום שני
-  const request = await provider.createPaymentRequest({
+  const requestInput = {
     amountAgorot: payment.amountAgorot,
-    currency: "ILS",
+    currency: "ILS" as const,
     description: `רכישת חבילת ${option.hours} שעות`,
     idempotencyKey: payment.idempotencyKey,
     customerRef: userId,
     metadata: { packageHours: String(option.hours) },
-  });
+  };
+  const request = await timeStep("provider", () => provider.createPaymentRequest(requestInput));
   if (!payment.providerPaymentId) {
-    await prisma.payment.updateMany({
-      where: { id: payment.id, providerPaymentId: null },
-      data: { providerPaymentId: request.providerPaymentId },
+    const paymentId = payment.id;
+    await timeStep("db.save", async () => {
+      await prisma.payment.updateMany({
+        where: { id: paymentId, providerPaymentId: null },
+        data: { providerPaymentId: request.providerPaymentId },
+      });
+      await audit(paymentId, "create", "ok");
     });
-    await audit(payment.id, "create", "ok");
   }
   return {
     paymentId: payment.id,

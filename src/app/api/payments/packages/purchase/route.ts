@@ -6,7 +6,8 @@ import { errorResponse, getFlowProvider, notFound, withoutProviderInternals } fr
 import { handlePackagePing, isPackagePingAvailable, type PackagePingEnv } from "@/lib/payments/make-diagnostics";
 import { findHoursPackage } from "@/lib/payments/pricing";
 import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
-import { probeCheckoutEmbeddable } from "@/lib/payments/frame-policy";
+import { framingHostConfigFromEnv, resolveCheckoutEmbeddable } from "@/lib/payments/frame-policy";
+import { TimingRecorder } from "@/lib/payments/timing";
 
 /** ה-origin הציבורי של האתר (מאחורי ה-proxy של Render request.url עשוי להיות כתובת פנימית) */
 function publicOrigin(request: Request): string {
@@ -44,25 +45,51 @@ export async function POST(request: Request) {
 
   const provider = getFlowProvider();
   if (!provider) return notFound();
-  const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "יש להתחבר" }, { status: 401 });
 
-  const body = await request.json().catch(() => null);
-  const hours = Number(body?.hours);
-  const clientKey = typeof body?.clientKey === "string" ? body.clientKey : "";
-  if (!Number.isInteger(hours)) return NextResponse.json({ error: "חבילה לא תקינה" }, { status: 400 });
-
+  // מדידת זמנים לכל שלב. נרשמים רק שמות שלבים ומשכים (ראו timing.ts), ונשלחים גם בכותרת Server-Timing
+  const timing = new TimingRecorder();
+  let outcome = "error";
+  let framing = "none";
   try {
-    const started = await startPackagePurchase({ userId: session.user.id, hours, clientKey, provider });
-    // האם דף התשלום מתיר הטמעה באתר (לפי כותרות האבטחה של הספק). אם לא - החלונית תפתח אותו בחלון נפרד
-    let checkoutEmbeddable: boolean | undefined;
-    if (started.checkoutUrl) {
-      const probe = await probeCheckoutEmbeddable(started.checkoutUrl, publicOrigin(request));
-      checkoutEmbeddable = probe.embeddable;
-      console.log(`[payments] checkout framing host=${new URL(started.checkoutUrl).hostname} embeddable=${probe.embeddable} reason=${probe.reason}`);
-    }
-    return NextResponse.json({ ...withoutProviderInternals(started, provider), checkoutEmbeddable });
-  } catch (err) {
-    return errorResponse(err);
+    return await timing.run(async () => {
+      const session = await timing.step("auth", () => auth());
+      if (!session?.user) {
+        outcome = "unauthenticated";
+        return NextResponse.json({ error: "יש להתחבר" }, { status: 401 });
+      }
+
+      const body = await request.json().catch(() => null);
+      const hours = Number(body?.hours);
+      const clientKey = typeof body?.clientKey === "string" ? body.clientKey : "";
+      if (!Number.isInteger(hours)) {
+        outcome = "invalid";
+        return NextResponse.json({ error: "חבילה לא תקינה" }, { status: 400 });
+      }
+
+      try {
+        const started = await startPackagePurchase({ userId: session.user.id, hours, clientKey, provider });
+        // האם להציג את דף התשלום ב-iframe. דומיין שידוע שאוסר הטמעה (grow.link) מוכרע בלי בקשת רשת
+        let checkoutEmbeddable: boolean | undefined;
+        if (started.checkoutUrl) {
+          const checkoutUrl = started.checkoutUrl;
+          const decision = await timing.step("framing", () =>
+            resolveCheckoutEmbeddable(checkoutUrl, publicOrigin(request), framingHostConfigFromEnv(process.env))
+          );
+          checkoutEmbeddable = decision.embeddable;
+          framing = `${decision.reason}${decision.probed ? "+probe" : ""}`;
+        }
+        outcome = started.checkoutUrl ? "checkout" : started.status.toLowerCase();
+        return NextResponse.json(
+          { ...withoutProviderInternals(started, provider), checkoutEmbeddable },
+          { headers: { "Server-Timing": timing.serverTimingHeader() } }
+        );
+      } catch (err) {
+        outcome = "failed";
+        return errorResponse(err);
+      }
+    });
+  } finally {
+    // שורה אחת לכל רכישה: תוצאה כללית, החלטת הטמעה ומשכי השלבים. בלי מזהי משתמש/תשלום, סכומים או כתובות
+    console.log(`[payments] purchase timing outcome=${outcome} framing=${framing} ${timing.logFields()}`);
   }
 }

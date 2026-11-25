@@ -6,7 +6,9 @@ import { shekel } from "@/lib/payments/client";
 import { CONFIRMATION_GRACE_MS, IFRAME_LOAD_TIMEOUT_MS, parseReturnMessage, type ReturnHint } from "@/lib/payments/embedded-checkout";
 
 /**
- * חלונית "תשלום מאובטח": סיכום רכישה -> יצירת קישור (בשרת, דרך Make) -> דף התשלום של Grow בתוך iframe.
+ * חלונית "תשלום מאובטח": נפתחת מיד בלחיצה על "רכישה" (מצב "creating", עם סיכום הרכישה) בזמן שהשרת יוצר את דף
+ * התשלום (דרך Make, במסלול Payment Link או Payment Process) -> דף התשלום של Grow בתוך iframe, או כפתור לחלון נפרד
+ * כשהדומיין ידוע כאוסר הטמעה.
  * שדות האשראי קיימים אך ורק בדף של Grow (מקור אחר, מבודד מהאתר). החלונית לא מחליטה על הצלחה: היא מציגה את מה
  * שההורה (BuyTab) קיבל מאימות השרת. חזרה מה-iframe (הודעה מדף החזרה שלנו או טעינת דף מה-origin שלנו) רק מזרזת
  * בדיקת סטטוס בשרת.
@@ -43,10 +45,12 @@ export interface CheckoutModalProps {
   /** טעינה מחדש של דף התשלום (אחרי ביטול באמצע) */
   onReopen?: () => void;
   onCheckNow: () => void;
+  /** דף התשלום נטען ב-iframe (למדידת זמנים בלבד; אינו מעיד על דבר לגבי התשלום) */
+  onFrameLoaded?: () => void;
 }
 
 export function SecureCheckoutModal(props: CheckoutModalProps) {
-  const { hours, amountAgorot, phase, checkoutUrl, error, returnHint, sandbox, onStart, onClose, onReturned, onOpenExternal, onReopen, onCheckNow } = props;
+  const { hours, amountAgorot, phase, checkoutUrl, error, returnHint, sandbox, onStart, onClose, onReturned, onOpenExternal, onReopen, onCheckNow, onFrameLoaded } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const [frameLoaded, setFrameLoaded] = useState(false);
@@ -69,14 +73,15 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
     };
   }, []);
 
-  // Escape סוגר (כמו כפתור הסגירה). בזמן יצירת הקישור לא סוגרים כדי לא לאבד את התשובה
+  // Escape סוגר (כמו כפתור הסגירה). גם בזמן יצירת הקישור: הבקשה ממשיכה ברקע, והרכישה הממתינה מוצגת בדף
+  // (עם "חזרה לדף התשלום"), כך ששום תשובה לא הולכת לאיבוד ולא נוצר קישור נוסף
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && phase !== "creating") closeRef.current();
+      if (e.key === "Escape") closeRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase]);
+  }, []);
 
   // הודעה מדף החזרה שלנו בתוך ה-iframe: מתקבלת רק מה-origin של האתר ומה-iframe הזה
   useEffect(() => {
@@ -109,6 +114,7 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
   }, [phase]);
 
   function onFrameLoad() {
+    if (!frameLoaded) onFrameLoaded?.();
     setFrameLoaded(true);
     // דף מה-origin שלנו (דף החזרה, או כל דף אחר של האתר) נגיש לקריאה; דף Grow זורק SecurityError
     try {
@@ -146,7 +152,6 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
           <button
             type="button"
             onClick={onClose}
-            disabled={phase === "creating"}
             aria-label="סגירת חלונית התשלום"
             className="w-9 h-9 rounded-full flex items-center justify-center text-stone-500 hover:bg-cream-100 hover:text-stone-800 disabled:opacity-40"
           >
@@ -219,10 +224,14 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
                   data-testid="checkout-iframe"
                 />
               </div>
+              {/* אין מעבר אוטומטי: ייתכן שהלקוח כבר מקליד פרטים בדף. מציעים חלופה, והבחירה שלו */}
               {frameSlow && !frameLoaded && (
-                <p role="status" className="rounded-xl px-4 py-3 text-sm bg-bronze-50 text-bronze-700 border border-bronze-200">
-                  דף התשלום נטען לאט מהרגיל. אפשר להמשיך להמתין או לפתוח אותו בחלון חיצוני.
-                </p>
+                <div role="status" className="rounded-xl px-4 py-3 text-sm bg-bronze-50 text-bronze-700 border border-bronze-200 flex flex-wrap items-center justify-between gap-2" data-testid="checkout-slow">
+                  <span>דף התשלום נטען לאט מהרגיל. אפשר להמשיך להמתין או לפתוח אותו בחלון נפרד.</span>
+                  <button type="button" onClick={onOpenExternal} className="btn btn-secondary btn-sm">
+                    פתיחה בחלון נפרד
+                  </button>
+                </div>
               )}
               <p className="text-xs text-stone-500 flex flex-wrap items-center gap-x-1">
                 דף התשלום לא מוצג כראוי?
@@ -276,13 +285,19 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
         </div>
 
         <footer className="px-5 sm:px-6 py-4 border-t border-cream-100 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
-          {(phase === "summary" || phase === "creating") && (
+          {phase === "creating" && (
+            <button type="button" className="btn btn-secondary" onClick={onClose}>
+              ביטול
+            </button>
+          )}
+          {/* "summary" מוצג רק אחרי כשל ביצירת התשלום: ניסיון חוזר עם אותו מפתח (אידמפוטנטי, בלי קישור כפול) */}
+          {phase === "summary" && (
             <>
-              <button type="button" className="btn btn-secondary" onClick={onClose} disabled={phase === "creating"}>
-                ביטול
+              <button type="button" className="btn btn-secondary" onClick={onClose}>
+                סגירה
               </button>
-              <button type="button" className="btn btn-primary" onClick={onStart} disabled={phase === "creating"} data-testid="checkout-start">
-                {phase === "creating" ? "מכינים תשלום..." : `מעבר לתשלום ${shekel(amountAgorot)}`}
+              <button type="button" className="btn btn-primary" onClick={onStart} data-testid="checkout-start">
+                {error ? "ניסיון חוזר" : `מעבר לתשלום ${shekel(amountAgorot)}`}
               </button>
             </>
           )}

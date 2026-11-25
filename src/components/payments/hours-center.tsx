@@ -317,6 +317,16 @@ const POLL_MS = 4000;
 /** כשהאימות מול Make/Grow אינו זמין זמנית: מנסים שוב לאט יותר, כדי לא להציף את Make בבקשות שנכשלות */
 const DEGRADED_POLL_MS = 30_000;
 
+/** שעון מונוטוני למדידת זמנים בדפדפן (נקרא רק מתוך מטפלי אירועים, לא בזמן רינדור) */
+function nowMs(): number {
+  return performance.now();
+}
+
+/** שעון קיר (ms), לשמירת זמן יצירת הקישור. נקרא רק מתוך מטפלי אירועים */
+function wallClockMs(): number {
+  return Date.now();
+}
+
 function newClientKey(): string {
   return globalThis.crypto.randomUUID().replace(/-/g, "");
 }
@@ -353,10 +363,19 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
   const [error, setError] = useState<string | null>(null);
   const { busy, run } = useSingleFlight();
   const checking = useRef(false);
+  /** החלונית הפתוחה כרגע (לפי מפתח הרכישה), כדי שתשובה שמגיעה אחרי סגירת החלונית לא תפתח אותה מחדש */
+  const openKeyRef = useRef<string | null>(null);
+  /** מדידת זמנים בדפדפן (לחיצה -> תשובת שרת -> טעינת דף התשלום). משכים בלבד, בלי שום ערך מהרכישה */
+  const clientTimingRef = useRef<{ clickAt: number; createMs?: number; logged?: boolean } | null>(null);
+  /** בקשת יצירת תשלום רצה כרגע (גם אם החלונית נסגרה) */
+  const creatingRef = useRef(false);
+  /** המפתח של ניסיון שנכשל, לשימוש חוזר בניסיון הבא לאותה חבילה (אותה רכישה בשרת, לא רכישה חדשה) */
+  const retryKeyRef = useRef<{ hours: number; key: string } | null>(null);
   /** הודעת "אימות לא זמין זמנית" מהשרת (503). התשלום עדיין ממתין - לא שגיאה ולא כישלון */
   const [verifyUnavailable, setVerifyUnavailable] = useState<string | null>(null);
 
   const closeModal = useCallback(() => {
+    openKeyRef.current = null;
     setOffer(null);
     setPhase("summary");
     setReturnHint("unknown");
@@ -432,58 +451,104 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
     return () => window.clearInterval(id);
   }, [purchase]);
 
-  async function start() {
-    if (!offer) return;
-    const { hours, key } = offer;
+
+  /**
+   * לחיצה אחת: פותחים את החלונית מיד ושולחים את בקשת יצירת התשלום במקביל.
+   * מניעת כפילות בצד הלקוח (בנוסף ל-idempotency בשרת): לחיצה בזמן שבקשת יצירה עדיין רצה - גם אם החלונית נסגרה, וגם
+   * לחיצה כפולה לפני רינדור - נבלעת. ניסיון חוזר לאותה חבילה אחרי כשל משתמש באותו מפתח, כך שהשרת מחזיר את אותה רכישה
+   * (או חוסם כשמצבה מול Make לא ידוע) ולא פותח רכישה וקישור נוספים.
+   */
+  function buy(p: PackageOfferView) {
+    if (creatingRef.current || openKeyRef.current) return;
+    const retry = retryKeyRef.current;
+    const key = retry && retry.hours === p.hours ? retry.key : newClientKey();
+    const o: Offer = { hours: p.hours, priceAgorot: p.priceAgorot, key };
+    clientTimingRef.current = { clickAt: nowMs() };
+    openKeyRef.current = o.key;
+    setOffer(o);
+    void start(o);
+  }
+
+  function onFrameLoaded() {
+    const t = clientTimingRef.current;
+    if (!t || t.logged || t.createMs === undefined) return;
+    t.logged = true;
+    console.info(`[payments-timing] create_ms=${Math.round(t.createMs)} frame_ms=${Math.round(nowMs() - t.clickAt - t.createMs)} total_ms=${Math.round(nowMs() - t.clickAt)}`);
+  }
+
+  async function start(o: Offer | null = offer) {
+    if (!o) return;
+    const { hours, key } = o;
     await run(async () => {
-      setError(null);
-      setMessage(null);
-      setPhase("creating");
-      const res = await api<{
-        paymentId: string;
-        providerPaymentId?: string;
-        hours: number;
-        amountAgorot: number;
-        checkoutUrl?: string;
-        communicationTest?: boolean;
-        outcome?: string;
-        checkoutEmbeddable?: boolean;
-      }>(
-        "/api/payments/packages/purchase",
-        // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת. אותו מפתח בלחיצה חוזרת = אותה עסקה
-        { body: { hours, clientKey: key } }
-      );
-      if (!res.ok) {
-        setPhase("summary");
-        setError(res.data.error ?? "לא ניתן ליצור את דף התשלום כעת. לא בוצע חיוב, אפשר לנסות שוב.");
-        return;
+      // מסומן באופן סינכרוני (לפני כל await), כך שגם לחיצה שנייה באותו רגע רואה שיש בקשה רצה
+      creatingRef.current = true;
+      try {
+        await createPurchase(hours, key);
+      } finally {
+        creatingRef.current = false;
       }
-      // בדיקת תקשורת ל-Make (Staging בלבד): לא נוצר תשלום, אין מה לשמור או לאמת
-      if (res.data.communicationTest) {
-        closeModal();
-        setMessage({ tone: "warn", text: `בדיקת תקשורת: הבקשה נשלחה ל-Make (${res.data.outcome ?? "לא ידוע"}). לא נוצר תשלום ולא נוספה יתרה.` });
-        return;
-      }
-      const checkoutUrl = res.data.checkoutUrl;
-      const embeddable = isEmbeddableCheckoutUrl(checkoutUrl);
-      const p: StoredPurchase = {
-        paymentId: res.data.paymentId,
-        providerPaymentId: res.data.providerPaymentId,
-        hours: res.data.hours,
-        amountAgorot: res.data.amountAgorot,
-        ...(embeddable ? { checkoutUrl, checkoutCreatedAt: Date.now() } : {}),
-        ...(embeddable && res.data.checkoutEmbeddable === false ? { embeddable: false } : {}),
-      };
-      savePurchase(p);
-      setPurchase(p);
-      if (embeddable) {
-        setPhase(checkoutPhaseFor(p.embeddable));
-        return;
-      }
-      // ספק ללא דף תשלום (Mock מקומי): החלונית נסגרת והמצב מוצג בכרטיס הרכישה הממתינה
-      closeModal();
-      void verify(p);
     });
+  }
+
+  async function createPurchase(hours: number, key: string) {
+    setError(null);
+    setMessage(null);
+    setPhase("creating");
+    const res = await api<{
+      paymentId: string;
+      providerPaymentId?: string;
+      hours: number;
+      amountAgorot: number;
+      checkoutUrl?: string;
+      communicationTest?: boolean;
+      outcome?: string;
+      checkoutEmbeddable?: boolean;
+    }>(
+      "/api/payments/packages/purchase",
+      // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת. אותו מפתח בלחיצה חוזרת = אותה עסקה
+      { body: { hours, clientKey: key } }
+    );
+    const stillOpen = openKeyRef.current === key;
+    if (clientTimingRef.current) clientTimingRef.current.createMs = nowMs() - clientTimingRef.current.clickAt;
+    if (!res.ok) {
+      // ניסיון חוזר לאותה חבילה ישתמש באותו מפתח (אותה רכישה בשרת), גם אחרי סגירת החלונית
+      retryKeyRef.current = { hours, key };
+      const text = res.data.error ?? "לא ניתן ליצור את דף התשלום כעת. לא בוצע חיוב, אפשר לנסות שוב.";
+      if (stillOpen) {
+        setPhase("summary");
+        setError(text);
+      } else {
+        setMessage({ tone: "error", text });
+      }
+      return;
+    }
+    retryKeyRef.current = null;
+    // בדיקת תקשורת ל-Make (Staging בלבד): לא נוצר תשלום, אין מה לשמור או לאמת
+    if (res.data.communicationTest) {
+      closeModal();
+      setMessage({ tone: "warn", text: `בדיקת תקשורת: הבקשה נשלחה ל-Make (${res.data.outcome ?? "לא ידוע"}). לא נוצר תשלום ולא נוספה יתרה.` });
+      return;
+    }
+    const checkoutUrl = res.data.checkoutUrl;
+    const embeddable = isEmbeddableCheckoutUrl(checkoutUrl);
+    const p: StoredPurchase = {
+      paymentId: res.data.paymentId,
+      providerPaymentId: res.data.providerPaymentId,
+      hours: res.data.hours,
+      amountAgorot: res.data.amountAgorot,
+      ...(embeddable ? { checkoutUrl, checkoutCreatedAt: wallClockMs() } : {}),
+      ...(embeddable && res.data.checkoutEmbeddable === false ? { embeddable: false } : {}),
+    };
+    savePurchase(p);
+    setPurchase(p);
+    if (embeddable) {
+      // החלונית נסגרה בזמן ההמתנה: לא פותחים אותה מחדש. הרכישה הממתינה מוצגת בדף עם "חזרה לדף התשלום"
+      if (stillOpen) setPhase(checkoutPhaseFor(p.embeddable));
+      return;
+    }
+    // ספק ללא דף תשלום (Mock מקומי): החלונית נסגרת והמצב מוצג בכרטיס הרכישה הממתינה
+    closeModal();
+    void verify(p);
   }
 
   function openExternal() {
@@ -602,12 +667,7 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
                 type="button"
                 className="btn btn-primary mt-auto"
                 disabled={!canPurchase || busy || !!purchase || !!offer}
-                onClick={() => {
-                  setError(null);
-                  setMessage(null);
-                  setPhase("summary");
-                  setOffer({ hours: p.hours, priceAgorot: p.priceAgorot, key: newClientKey() });
-                }}
+                onClick={() => buy(p)}
               >
                 רכישה
               </button>
@@ -625,7 +685,11 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
           error={error}
           returnHint={returnHint}
           sandbox={sandbox}
-          onStart={() => void start()}
+          onStart={() => {
+            clientTimingRef.current = { clickAt: nowMs() };
+            void start();
+          }}
+          onFrameLoaded={onFrameLoaded}
           onClose={closeModal}
           onReturned={onReturned}
           onOpenExternal={openExternal}

@@ -4,6 +4,7 @@ import { prisma as defaultDb } from "@/lib/prisma";
 import { agorotToShekels, assertFullName, normalizeIsraeliPhone, shekelsToAgorot } from "@/lib/payments/grow-provider";
 import { PrismaMockStore, type MockStore } from "@/lib/payments/mock-store";
 import { PACKAGE_RETURN_PATH } from "@/lib/payments/embedded-checkout";
+import { timeStep } from "@/lib/payments/timing";
 import {
   PaymentError,
   WebhookVerificationError,
@@ -47,10 +48,31 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const WAIT_TOTAL_MS = 8_000;
 const WAIT_POLL_MS = 250;
 
+/**
+ * מסלול יצירת דף התשלום ב-Grow:
+ *  - "link": Create Payment Link (המסלול הקיים, ברירת המחדל). דף grow.link, שאינו מתיר הטמעה באתר שלנו.
+ *  - "process": createPaymentProcess (Light API) דרך תרחיש Make נפרד. דף התשלום שלו מיועד גם ל-iframe.
+ * כל תשלום זוכר באיזה מסלול נוצר (MakePaymentRecord.flow), והאימות שלו תמיד עובר דרך תרחיש האימות של אותו מסלול,
+ * כך שמעבר בין המסלולים לא שובר תשלומים פתוחים.
+ */
+export type MakeCheckoutFlow = "link" | "process";
+
+export interface MakeWebhookTarget {
+  webhookUrl: string;
+  apiKey: string;
+}
+
 export interface MakeConfig {
   /** כתובת ה-Custom webhook בתרחיש (HTTPS בלבד). סוד: לא נרשם בלוגים ולא נחשף ללקוח */
   webhookUrl: string;
   apiKey: string;
+  /** המסלול לתשלומים חדשים. ברירת מחדל: "link" (ללא שינוי מהמצב הקיים) */
+  flow?: MakeCheckoutFlow;
+  /**
+   * תרחישי Make של מסלול Payment Process (יצירה ואימות). אופציונלי: חובה רק כש-flow="process". כשהוא מוגדר גם במסלול
+   * "link", תשלומי process שכבר נוצרו ממשיכים להתאמת אחרי חזרה למסלול הקישורים
+   */
+  process?: { create: MakeWebhookTarget; verify: MakeWebhookTarget };
   /** תרחיש האימות (Get Payment Link Info) - חובה כדי ש-getPaymentStatus יעבוד; בלעדיו האימות נכשל במפורש */
   verify?: { webhookUrl: string; apiKey: string };
   /** בסיס HTTPS של האתר לבניית כתובת החזרה אחרי תשלום (ההחזרה אינה הוכחת תשלום - האימות רק בשרת) */
@@ -85,6 +107,8 @@ interface MakeCreateClaim {
 /** רשומה שרתית בלבד (לא חוזרת ללקוח): מזהי Grow אופציונליים כפי שחזרו מ-Make */
 interface MakePaymentRecord {
   checkoutUrl: string;
+  /** המסלול שבו נוצר התשלום. חסר ברשומות ישנות = "link" */
+  flow?: MakeCheckoutFlow;
   /** הסכום שביקשנו (אגורות): הסכום הצפוי לכל תשובת אימות שאינה "שולם" */
   amountAgorot: number;
   processId?: string;
@@ -237,7 +261,20 @@ function scalar(value: unknown): string | undefined {
  *
  * תשובה לא תקינה זורקת PaymentError (כשל אימות זמני): שום מצב לא משתנה, והתשלום נשאר ממתין.
  */
-export function parseVerifyTransactions(data: Record<string, unknown>, expectedProcessId: string): VerifyTransactionsView {
+export function parseVerifyTransactions(
+  data: Record<string, unknown>,
+  expectedProcessId: string,
+  flow: MakeCheckoutFlow = "link"
+): VerifyTransactionsView {
+  // התשובה חייבת להצהיר על אותו מסלול שבו נוצר התשלום: תרחיש אימות של מסלול אחר (הגדרה שגויה) נדחה ואינו מאשר דבר.
+  // במסלול process חובה v2 עם flow="process" (אין מבנה legacy שקושר עסקה לתהליך)
+  if (flow === "process") {
+    if (data.format !== "v2" || data.flow !== "process") throw malformed("תשובה שאינה של מסלול Payment Process");
+  } else if (data.flow !== undefined && data.flow !== "link") {
+    throw malformed("תשובה של מסלול אחר");
+  }
+  // השדה שקושר כל עסקה לתשלום שלנו: במסלול הקישורים - מזהה קישור התשלום; במסלול process - מזהה התהליך עצמו
+  const bindingField = flow === "process" ? "processId" : "paymentLinkProcessId";
   if (data.format === "v2") {
     const grow = data.grow;
     if (!grow || typeof grow !== "object" || Array.isArray(grow)) throw malformed("grow חסר");
@@ -256,7 +293,7 @@ export function parseVerifyTransactions(data: Record<string, unknown>, expectedP
       const code = scalar(tx.statusCode) ?? "";
       if (!STATUS_CODE.test(code)) throw malformed("קוד סטטוס חסר או לא תקין");
       statusCodes.push(code);
-      const linkId = scalar(tx.paymentLinkProcessId) ?? "";
+      const linkId = scalar(tx[bindingField]) ?? "";
       const transactionId = scalar(tx.transactionId) ?? "";
       if (code === GROW_PAID || code === GROW_REFUND) {
         if (!linkId) throw malformed("עסקה ללא מזהה קישור התשלום של Grow");
@@ -337,6 +374,16 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
     if (cfg.allowedCheckoutHosts.length === 0 || !cfg.allowedCheckoutHosts.every(isValidAllowedHost)) {
       throw new PaymentError("חובה להגדיר דומייני checkout מאושרים (שמות מארח תקינים, בלי סכמה או תווים כלליים)");
     }
+    if (cfg.flow !== undefined && cfg.flow !== "link" && cfg.flow !== "process") throw new PaymentError("מסלול תשלום לא מוכר");
+    if (cfg.flow === "process" && !cfg.process) throw new PaymentError("מסלול Payment Process דורש תרחישי יצירה ואימות ייעודיים");
+    if (cfg.process) {
+      for (const t of [cfg.process.create, cfg.process.verify]) {
+        if (new URL(t.webhookUrl).protocol !== "https:") throw new PaymentError("כתובות ה-Webhook של מסלול Payment Process חייבות להיות HTTPS");
+        if (!t.apiKey || t.apiKey.length < MIN_MAKE_API_KEY_LENGTH) {
+          throw new PaymentError(`מפתח API של מסלול Payment Process קצר מ-${MIN_MAKE_API_KEY_LENGTH} תווים`);
+        }
+      }
+    }
     this.environment = cfg.environment;
     this.db = cfg.db ?? defaultDb;
     this.fetchImpl = cfg.fetchImpl ?? fetch;
@@ -361,17 +408,21 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
     const claimKey = `make-create:${input.idempotencyKey}`;
 
     // כל הוולידציה ופתרון הלקוח לפני התפיסה: כשל כאן ודאי שלא שלח דבר ל-Make, ולכן לא נשאר "סימן" שחוסם ניסיון חוזר
-    const customer = await this.resolveCustomer(input.customerRef);
+    const customer = await timeStep("make.customer", () => this.resolveCustomer(input.customerRef));
     const providerPaymentId = deriveMakePaymentId(input.idempotencyKey);
+    const flow: MakeCheckoutFlow = this.cfg.flow ?? "link";
 
     // תפיסה אטומית (INSERT ייחודי): רק המנצח פונה ל-Make; מפסיד ממתין לתוצאתו ולעולם לא יוצר קישור שני
-    const claimed = await this.store.putIfAbsent<MakeCreateClaim>(claimKey, { fingerprint, state: "pending", result: null });
-    if (!claimed) return this.awaitExisting(claimKey, fingerprint, providerPaymentId);
+    const claimed = await timeStep("make.claim", () =>
+      this.store.putIfAbsent<MakeCreateClaim>(claimKey, { fingerprint, state: "pending", result: null })
+    );
+    if (!claimed) return timeStep("make.await", () => this.awaitExisting(claimKey, fingerprint, providerPaymentId));
 
     try {
       // מכאן הבקשה עלולה להגיע ל-Make וליצור קישור ב-Grow גם אם לא קיבלנו תשובה תקינה. גם תשובת 4xx/5xx אינה הוכחה
       // שלא נוצר קישור (תרחיש יכול להחזיר כל סטטוס אחרי שכבר פנה ל-Grow), ולכן כל כשל כאן = "לא ידוע", בלי ניסיון חוזר
-      const data = await this.postToMake({
+      const returnUrl = this.returnUrlFor(input);
+      const payload: Record<string, string | undefined> = {
         reference: providerPaymentId,
         idempotencyKey: input.idempotencyKey,
         amount: agorotToShekels(input.amountAgorot),
@@ -381,21 +432,32 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
         fullName: customer.fullName,
         phone: customer.phone,
         email: customer.email,
-        returnUrl: this.returnUrlFor(input),
+        returnUrl,
         // התראת שרת ישירה מ-Grow: מפעילה את החבילה גם אם הלקוח סגר את הדפדפן. תרחיש 1 צריך להעביר אותה ל-Grow
         notifyUrl: this.notifyUrlFor(providerPaymentId),
-      });
+      };
+      // מסלול הקישורים: הגוף נשאר בדיוק כפי שהיה (תאימות מלאה לתרחיש הפעיל). מסלול process: מצהירים על המסלול,
+      // ושולחים cancelUrl לאותו דף החזרה (ביטול בתוך ה-iframe חוזר לאתר ולא נתקע בדף של Grow)
+      if (flow === "process") {
+        payload.flow = "process";
+        payload.cancelUrl = returnUrl;
+      }
+      const target = flow === "process" ? this.cfg.process!.create : this.cfg;
+      const data = await timeStep("make.http", () => this.postToMake(payload, target));
       const checkoutUrl = parseCheckoutUrl(data.url, this.cfg.allowedCheckoutHosts);
       const record: MakePaymentRecord = {
         checkoutUrl,
+        flow,
         processId: optionalString(data.processId),
         processToken: optionalString(data.processToken),
         createdAt: Date.now(),
         amountAgorot: input.amountAgorot,
       };
-      await this.store.put<MakePaymentRecord>(`make-payment:${providerPaymentId}`, record);
       const result: PaymentRequestResult = { providerPaymentId, status: "PENDING", checkoutUrl };
-      await this.store.put<MakeCreateClaim>(claimKey, { fingerprint, state: "done", result });
+      await timeStep("make.save", async () => {
+        await this.store.put<MakePaymentRecord>(`make-payment:${providerPaymentId}`, record);
+        await this.store.put<MakeCreateClaim>(claimKey, { fingerprint, state: "done", result });
+      });
       return result;
     } catch (err) {
       await this.store.put<MakeCreateClaim>(claimKey, { fingerprint, state: "unknown", result: null }).catch(() => {});
@@ -493,8 +555,9 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
    * מוחזרות ב-paidTransactions ומשויכות לתשלום הזה בלבד. ההשוואה לסכום השמור נעשית ב-finalize.
    */
   async getPaymentStatus(providerPaymentId: string): Promise<VerifiedPaymentStatus> {
-    if (!this.cfg.verify) throw new PaymentError("אימות סטטוס תשלום דרך Make אינו מוגדר (תרחיש האימות חסר) - לא מוחזר סטטוס");
-    const { record, view } = await this.fetchVerification(providerPaymentId, this.cfg.verify);
+    // אין שום תרחיש אימות: נכשלים מיד, לפני כל קריאה מהמסד
+    if (!this.cfg.verify && !this.cfg.process) throw new PaymentError("אימות סטטוס תשלום דרך Make אינו מוגדר (תרחיש האימות חסר) - לא מוחזר סטטוס");
+    const { record, view } = await this.fetchVerification(providerPaymentId, "by-flow");
     // עסקה אחת לא יכולה לאשר שני תשלומים: כל עסקה ששולמה משויכת לתשלום הראשון שאומת בה, ואם אחת מהן כבר שייכת
     // לתשלום אחר - לא מאשרים דבר
     for (const tx of view.paid) await this.claimTransaction(tx.transactionId, providerPaymentId);
@@ -522,20 +585,25 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
   /** שולח לתרחיש האימות את המזהים השמורים, מוודא שהתשובה שייכת לבקשה, ומפענח את העסקאות. בלי שום כתיבה */
   private async fetchVerification(
     providerPaymentId: string,
-    target: { webhookUrl: string; apiKey: string }
+    targetOrFlow: MakeWebhookTarget | "by-flow"
   ): Promise<{ record: MakePaymentRecord & { processId: string }; view: VerifyTransactionsView }> {
     if (!/^make:[0-9a-f]{32}$/.test(providerPaymentId)) throw new PaymentError("מזהה תשלום לא תקין");
     const record = await this.store.get<MakePaymentRecord>(`make-payment:${providerPaymentId}`);
     if (!record?.processId || !record.processToken || !Number.isInteger(record.amountAgorot)) {
       throw new PaymentError("חסרים מזהי Grow שמורים בשרת עבור התשלום - לא ניתן לאמת");
     }
+    // רשומה ישנה (לפני שדה flow) נוצרה תמיד במסלול הקישורים
+    const flow: MakeCheckoutFlow = record.flow === "process" ? "process" : "link";
+    // תרחיש האימות נקבע לפי המסלול שבו התשלום נוצר, לא לפי ההגדרה הנוכחית. חסר = כשל זמני (התשלום נשאר ממתין)
+    const target = targetOrFlow !== "by-flow" ? targetOrFlow : flow === "process" ? this.cfg.process?.verify : this.cfg.verify;
+    if (!target) throw new PaymentError("אימות סטטוס תשלום דרך Make אינו מוגדר עבור מסלול התשלום (תרחיש האימות חסר) - לא מוחזר סטטוס");
     const data = await this.postToMake({ reference: providerPaymentId, processId: record.processId, processToken: record.processToken }, target);
     if (data.reference !== providerPaymentId) throw new PaymentError("תשובת האימות מ-Make אינה תואמת לתשלום המבוקש");
     // זיהוי מדויק של התשלום: Make חייב להחזיר גם את processId ששמרנו ביצירה. בלי התאמה מדויקת אין אימות
     const echoedProcess = typeof data.processId === "string" || typeof data.processId === "number" ? String(data.processId) : "";
     if (echoedProcess !== record.processId) throw new PaymentError("תשובת האימות אינה מזהה את תהליך התשלום שנשמר - לא מאושר");
     if (data.currency !== undefined && data.currency !== "ILS") throw new PaymentError("תשובת האימות כוללת מטבע שאינו ILS");
-    return { record: { ...record, processId: record.processId }, view: parseVerifyTransactions(data, record.processId) };
+    return { record: { ...record, processId: record.processId }, view: parseVerifyTransactions(data, record.processId, flow) };
   }
 
   private async claimTransaction(transactionId: string, providerPaymentId: string): Promise<void> {

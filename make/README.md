@@ -119,3 +119,25 @@ MAKE_APPROVE_API_KEY=<המפתח של תרחיש 3>
 ```
 
 בלי המשתנים האלה האתר פשוט מדלג על האישור. הפעלת החבילה לא תלויה בו.
+
+## מסלול Payment Process (createPaymentProcess): הכנה בקוד, טרם הופעל
+
+האתר תומך בשני מסלולים, לפי `MAKE_PAYMENT_FLOW` (ברירת מחדל `link`, כלומר תרחישים 1-3 שלמעלה בלי שום שינוי).
+מסלול `process` מיועד לדף תשלום שניתן להטמיע ב-iframe, ודורש **שני תרחישים חדשים ונפרדים**. התרחישים הקיימים לא משתנים.
+לפני הקמתם צריך אישור מ-Grow: הרשאה ל-createPaymentProcess (דרך "Make an API Call" או userId/pageCode), ואישור הטמעה.
+
+**תרחיש יצירה (process)** → `MAKE_PROCESS_WEBHOOK_URL` / `MAKE_PROCESS_API_KEY` (מפתח חדש, לא של תרחיש 1)
+- מקבל את כל השדות של תרחיש 1, ובנוסף `flow` (תמיד `"process"`) ו-`cancelUrl` (אותו דף החזרה כמו `returnUrl`).
+- קורא ל-createPaymentProcess ב-Grow עם הסכום, התיאור, שם וטלפון, `successUrl`=`returnUrl`, `cancelUrl`, `notifyUrl`
+  ו-`cField1`=`reference`.
+- מחזיר בדיוק את אותו חוזה כמו תרחיש 1: `{"url", "processId", "processToken"}`. כשל ← HTTP 502.
+- הדומיין של `url` (למשל `sandbox.meshulam.co.il`) חייב להופיע ב-`MAKE_PAYMENT_CHECKOUT_HOSTS`.
+
+**תרחיש אימות (process)** → `MAKE_PROCESS_VERIFY_WEBHOOK_URL` / `MAKE_PROCESS_VERIFY_API_KEY`
+- מקבל `reference, processId, processToken` וקורא ל-getPaymentProcessInfo.
+- מחזיר v2 עם הצהרת מסלול: `{"format":"v2","flow":"process","reference","processId","grow":{"transactions":[{"statusCode","sum","transactionId","processId"}]}}`.
+- ההבדל היחיד מ-v2 של הקישורים: כל עסקה נקשרת לתשלום דרך `processId` שלה (מזהה התהליך), במקום `paymentLinkProcessId`.
+  האתר דוחה תשובה בלי `"flow":"process"`, תשובת legacy, ועסקה שה-processId שלה שונה מהשמור.
+
+התראת השרת (notifyUrl), approveTransaction (תרחיש 3, שעדיין לא נבדק בפועל), השוואת הסכום, שיוך כל עסקה לרכישה אחת
+וזיכוי חד-פעמי נשארים זהים בשני המסלולים.

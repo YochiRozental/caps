@@ -2,7 +2,14 @@ import type { MockStore } from "@/lib/payments/mock-store";
 import { MockPaymentProvider } from "@/lib/payments/mock-provider";
 import { GROW_SANDBOX_BASE_URL, GrowPaymentProvider } from "@/lib/payments/grow-provider";
 import { isStagingGateActive } from "@/lib/staging-gate/config";
-import { MIN_MAKE_API_KEY_LENGTH, isMakeVerificationReady, MakeGrowPaymentProvider, isValidAllowedHost, parseAllowedHosts } from "@/lib/payments/make-provider";
+import {
+  MIN_MAKE_API_KEY_LENGTH,
+  isMakeVerificationReady,
+  MakeGrowPaymentProvider,
+  isValidAllowedHost,
+  parseAllowedHosts,
+  type MakeCheckoutFlow,
+} from "@/lib/payments/make-provider";
 import { PaymentConfigError, type PaymentProvider } from "@/lib/payments/provider";
 
 /**
@@ -49,6 +56,15 @@ export interface PaymentEnv {
   /** אופציונלי: תרחיש Make שמבצע approveTransaction ב-Grow אחרי התראת שרת. בלעדיו ההתראה עדיין מפעילה חבילה */
   MAKE_APPROVE_WEBHOOK_URL?: string;
   MAKE_APPROVE_API_KEY?: string;
+  /**
+   * מסלול יצירת דף התשלום לתשלומים חדשים: "link" (ברירת מחדל, Create Payment Link) או "process" (createPaymentProcess
+   * דרך תרחישי Make ייעודיים, לדף שניתן להטמיע ב-iframe). "process" דורש את ארבעת משתני MAKE_PROCESS_*
+   */
+  MAKE_PAYMENT_FLOW?: string;
+  MAKE_PROCESS_WEBHOOK_URL?: string;
+  MAKE_PROCESS_API_KEY?: string;
+  MAKE_PROCESS_VERIFY_WEBHOOK_URL?: string;
+  MAKE_PROCESS_VERIFY_API_KEY?: string;
   /** true רק ב-Staging, אחרי שתרחיש האימות נבדק מול Grow Sandbox. בלי זה ספק Make חסום */
   MAKE_VERIFICATION_CONFIRMED?: string;
   /** נקראים ע"י שער ה-Staging: ספק Make עולה רק כששער Staging פעיל */
@@ -175,12 +191,36 @@ function buildMakeProvider(env: PaymentEnv): PaymentProvider {
   if (!isHttpsUrl(env.MAKE_PAYMENT_RETURN_BASE_URL)) problems.push("MAKE_PAYMENT_RETURN_BASE_URL חסר או אינו HTTPS");
   const checkoutHosts = parseAllowedHosts(env.MAKE_PAYMENT_CHECKOUT_HOSTS);
   if (checkoutHosts.length === 0 || !checkoutHosts.every(isValidAllowedHost)) problems.push("MAKE_PAYMENT_CHECKOUT_HOSTS חסר או לא תקין");
+
+  // מסלול Payment Process: אופציונלי וכבוי כברירת מחדל. אם התרחישים מוגדרים במלואם הם נטענים גם במסלול "link",
+  // כדי שתשלומי process פתוחים ימשיכו להתאמת אחרי חזרה למסלול הקישורים
+  const flowRaw = (env.MAKE_PAYMENT_FLOW ?? "").trim().toLowerCase();
+  if (flowRaw !== "" && flowRaw !== "link" && flowRaw !== "process") problems.push("MAKE_PAYMENT_FLOW חייב להיות link או process");
+  const flow: MakeCheckoutFlow = flowRaw === "process" ? "process" : "link";
+  const keyOk = (v: string | undefined) => (v?.length ?? 0) >= MIN_MAKE_API_KEY_LENGTH;
+  const processVars = [env.MAKE_PROCESS_WEBHOOK_URL, env.MAKE_PROCESS_API_KEY, env.MAKE_PROCESS_VERIFY_WEBHOOK_URL, env.MAKE_PROCESS_VERIFY_API_KEY];
+  const processComplete =
+    isHttpsUrl(env.MAKE_PROCESS_WEBHOOK_URL) &&
+    keyOk(env.MAKE_PROCESS_API_KEY) &&
+    isHttpsUrl(env.MAKE_PROCESS_VERIFY_WEBHOOK_URL) &&
+    keyOk(env.MAKE_PROCESS_VERIFY_API_KEY);
+  // הגדרה חלקית היא כמעט תמיד טעות: חוסמים (כשל סגור) במקום להתעלם בשקט
+  if (!processComplete && (flow === "process" || processVars.some(Boolean))) {
+    problems.push("משתני MAKE_PROCESS_* חסרים, אינם HTTPS או שהמפתחות קצרים מדי");
+  }
   if (problems.length > 0) throw new PaymentConfigError(`ספק Make חסום: ${problems.join("; ")}`);
   return new MakeGrowPaymentProvider({
     webhookUrl: env.MAKE_PAYMENT_WEBHOOK_URL!,
     apiKey: env.MAKE_PAYMENT_API_KEY!,
     environment: "sandbox",
     allowedCheckoutHosts: checkoutHosts,
+    flow,
+    process: processComplete
+      ? {
+          create: { webhookUrl: env.MAKE_PROCESS_WEBHOOK_URL!, apiKey: env.MAKE_PROCESS_API_KEY! },
+          verify: { webhookUrl: env.MAKE_PROCESS_VERIFY_WEBHOOK_URL!, apiKey: env.MAKE_PROCESS_VERIFY_API_KEY! },
+        }
+      : undefined,
     verify: { webhookUrl: env.MAKE_VERIFY_WEBHOOK_URL!, apiKey: env.MAKE_VERIFY_API_KEY! },
     returnBaseUrl: env.MAKE_PAYMENT_RETURN_BASE_URL!,
     // תרחיש האישור (approveTransaction) אופציונלי: מוגדר רק אם שני המשתנים תקינים. אחרת מדלגים עליו בשקט
