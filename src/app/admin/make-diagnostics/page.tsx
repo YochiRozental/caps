@@ -5,6 +5,7 @@ import { isDiagnosticsAvailable } from "@/lib/payments/make-diagnostics";
 import { resolveGrowTestLink } from "@/lib/payments/grow-sandbox-test-link";
 import { MakeDiagnosticsClient } from "./client";
 import { TestCheckoutCard } from "./test-checkout";
+import { VerifyV2DryRun } from "./verify-v2";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ export default async function MakeDiagnosticsPage() {
       <PageHeader eyebrow="Staging בלבד" title="אבחון תקשורת Make" subtitle="שליחת בקשת בדיקה עם נתוני דמה לתרחישי Make. לא מחייב, לא מאשר הזמנות ולא רוכש חבילות." />
       <TestCheckoutCard link={link} />
       <MakeDiagnosticsClient />
+      <VerifyV2DryRun />
     </>
   );
 }

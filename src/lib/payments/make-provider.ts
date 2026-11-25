@@ -298,6 +298,25 @@ export function parseVerifyTransactions(data: Record<string, unknown>, expectedP
 }
 
 
+/**
+ * תוצאת האימות מתוך העסקאות שפוענחו. פונקציה טהורה, משותפת לאימות האמיתי ולבדיקה היבשה.
+ * אין עסקה ששולמה (רשימה ריקה, 0, 9, 4, 6 או קוד לא מוכר): ממתין - לעולם לא הצלחה ולעולם לא כישלון סופי.
+ * החזר (6) מסומן ב-refundObserved. SUCCEEDED: הסכום של עסקה ששולמה (עדיפות לסכום הצפוי), וכל העסקאות ששולמו.
+ */
+export function verifiedStatusFromView(providerPaymentId: string, expectedAgorot: number, view: VerifyTransactionsView): VerifiedPaymentStatus {
+  const refund =
+    view.refunds.length > 0
+      ? {
+          refundObserved: true,
+          refundTransactions: view.refunds.map((r, i) => ({ transactionId: r.transactionId ?? `refund-${i + 1}`, amountAgorot: r.amountAgorot })),
+        }
+      : {};
+  const base = { providerPaymentId, refundedAgorot: view.refunds.reduce((sum, r) => sum + r.amountAgorot, 0), ...refund };
+  if (view.paid.length === 0) return { ...base, status: "PENDING", amountAgorot: expectedAgorot };
+  const chosen = view.paid.find((t) => t.amountAgorot === expectedAgorot) ?? view.paid[0];
+  return { ...base, status: "SUCCEEDED", amountAgorot: chosen.amountAgorot, paidTransactions: view.paid };
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
 }
@@ -475,36 +494,48 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
    */
   async getPaymentStatus(providerPaymentId: string): Promise<VerifiedPaymentStatus> {
     if (!this.cfg.verify) throw new PaymentError("אימות סטטוס תשלום דרך Make אינו מוגדר (תרחיש האימות חסר) - לא מוחזר סטטוס");
+    const { record, view } = await this.fetchVerification(providerPaymentId, this.cfg.verify);
+    // עסקה אחת לא יכולה לאשר שני תשלומים: כל עסקה ששולמה משויכת לתשלום הראשון שאומת בה, ואם אחת מהן כבר שייכת
+    // לתשלום אחר - לא מאשרים דבר
+    for (const tx of view.paid) await this.claimTransaction(tx.transactionId, providerPaymentId);
+    return verifiedStatusFromView(providerPaymentId, record.amountAgorot, view);
+  }
+
+  /**
+   * בדיקה יבשה (קריאה בלבד) מול תרחיש אימות אחר, לבדיקת תרחיש חדש לפני שמחליפים אליו. אותו מסלול בדיוק כמו
+   * getPaymentStatus (אותה בקשה, אותן בדיקות reference/processId/מטבע, אותו פענוח וקשירה למזהה הקישור), אבל בלי
+   * לשייך עסקאות: רק בודקים למי הן כבר שייכות. לא כותב דבר.
+   */
+  async dryRunVerification(
+    providerPaymentId: string,
+    target: { webhookUrl: string; apiKey: string }
+  ): Promise<{ view: VerifyTransactionsView; verified: VerifiedPaymentStatus; ownership: Record<string, "free" | "this" | "other"> }> {
+    const { record, view } = await this.fetchVerification(providerPaymentId, target);
+    const ownership: Record<string, "free" | "this" | "other"> = {};
+    for (const tx of view.paid) {
+      const owner = await this.store.get<{ paymentId: string }>(`make-tx:${tx.transactionId}`);
+      ownership[tx.transactionId] = !owner ? "free" : owner.paymentId === providerPaymentId ? "this" : "other";
+    }
+    return { view, verified: verifiedStatusFromView(providerPaymentId, record.amountAgorot, view), ownership };
+  }
+
+  /** שולח לתרחיש האימות את המזהים השמורים, מוודא שהתשובה שייכת לבקשה, ומפענח את העסקאות. בלי שום כתיבה */
+  private async fetchVerification(
+    providerPaymentId: string,
+    target: { webhookUrl: string; apiKey: string }
+  ): Promise<{ record: MakePaymentRecord & { processId: string }; view: VerifyTransactionsView }> {
     if (!/^make:[0-9a-f]{32}$/.test(providerPaymentId)) throw new PaymentError("מזהה תשלום לא תקין");
     const record = await this.store.get<MakePaymentRecord>(`make-payment:${providerPaymentId}`);
     if (!record?.processId || !record.processToken || !Number.isInteger(record.amountAgorot)) {
       throw new PaymentError("חסרים מזהי Grow שמורים בשרת עבור התשלום - לא ניתן לאמת");
     }
-    const data = await this.postToMake({ reference: providerPaymentId, processId: record.processId, processToken: record.processToken }, this.cfg.verify);
+    const data = await this.postToMake({ reference: providerPaymentId, processId: record.processId, processToken: record.processToken }, target);
     if (data.reference !== providerPaymentId) throw new PaymentError("תשובת האימות מ-Make אינה תואמת לתשלום המבוקש");
-    // זיהוי מדויק של התשלום: Make חייב להחזיר גם את processId ששמרנו ביצירה. בלי התאמה מדויקת אין אימות, ובחירת
-    // "העסקה האחרונה" בלבד אינה מספיקה (התרחיש בוחר עסקה מתוך התהליך הזה בלבד, והשרת מוודא שהוא אכן התהליך שלנו)
+    // זיהוי מדויק של התשלום: Make חייב להחזיר גם את processId ששמרנו ביצירה. בלי התאמה מדויקת אין אימות
     const echoedProcess = typeof data.processId === "string" || typeof data.processId === "number" ? String(data.processId) : "";
     if (echoedProcess !== record.processId) throw new PaymentError("תשובת האימות אינה מזהה את תהליך התשלום שנשמר - לא מאושר");
     if (data.currency !== undefined && data.currency !== "ILS") throw new PaymentError("תשובת האימות כוללת מטבע שאינו ILS");
-
-    const view = parseVerifyTransactions(data, record.processId);
-    const refund =
-      view.refunds.length > 0
-        ? {
-            refundObserved: true,
-            refundTransactions: view.refunds.map((r, i) => ({ transactionId: r.transactionId ?? `refund-${i + 1}`, amountAgorot: r.amountAgorot })),
-          }
-        : {};
-    const base = { providerPaymentId, refundedAgorot: view.refunds.reduce((sum, r) => sum + r.amountAgorot, 0), ...refund };
-    // אין עסקה ששולמה (רשימה ריקה, 0, 9, 4, 6 או קוד לא מוכר): עדיין ממתין, לעולם לא הצלחה ולעולם לא כישלון סופי
-    if (view.paid.length === 0) return { ...base, status: "PENDING", amountAgorot: record.amountAgorot };
-
-    // עסקה אחת לא יכולה לאשר שני תשלומים: כל עסקה ששולמה משויכת לתשלום הראשון שאומת בה, ואם אחת מהן כבר שייכת
-    // לתשלום אחר - לא מאשרים דבר
-    for (const tx of view.paid) await this.claimTransaction(tx.transactionId, providerPaymentId);
-    const chosen = view.paid.find((t) => t.amountAgorot === record.amountAgorot) ?? view.paid[0];
-    return { ...base, status: "SUCCEEDED", amountAgorot: chosen.amountAgorot, paidTransactions: view.paid };
+    return { record: { ...record, processId: record.processId }, view: parseVerifyTransactions(data, record.processId) };
   }
 
   private async claimTransaction(transactionId: string, providerPaymentId: string): Promise<void> {
