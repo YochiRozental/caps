@@ -6,7 +6,8 @@ import { listShiftWindows } from "@/lib/shifts/windows-db";
 import { hhmm } from "@/lib/shifts/windows";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "מחירון | הקפסולה" };
+export const metadata = { title: "מחירון",
+  alternates: { canonical: "/pricing" } };
 
 export default async function PricingPage() {
   const [shiftWindowsAll, pricing] = await Promise.all([listShiftWindows({ activeOnly: true }), getRegularPricing()]);

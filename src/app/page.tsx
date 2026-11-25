@@ -1,4 +1,6 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+import { SITE_URL, SITE_NAME, SITE_DESCRIPTION, SITE_TITLE } from "@/lib/site";
 import { Icon, Logo, LogoMark, type IconName } from "@/components/ui";
 
 const FEATURES: { icon: IconName; title: string; text: string }[] = [
@@ -19,9 +21,44 @@ const FEATURES: { icon: IconName; title: string; text: string }[] = [
   },
 ];
 
+export const metadata: Metadata = {
+  title: { absolute: SITE_TITLE },
+  alternates: { canonical: "/" },
+};
+
+const JSON_LD = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_URL}/#website`,
+      url: SITE_URL,
+      name: SITE_NAME,
+      inLanguage: "he-IL",
+      description: SITE_DESCRIPTION,
+    },
+    {
+      "@type": "LocalBusiness",
+      "@id": `${SITE_URL}/#business`,
+      name: SITE_NAME,
+      url: SITE_URL,
+      logo: `${SITE_URL}/brand/logo-full.png`,
+      image: `${SITE_URL}/opengraph-image.png`,
+      description: SITE_DESCRIPTION,
+      email: "hakapsula@gmail.com",
+      telephone: "083130541",
+      address: { "@type": "PostalAddress", addressLocality: "מודיעין עילית", addressCountry: "IL" },
+    },
+  ],
+};
+
 export default function Home() {
   return (
     <div className="space-y-8">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD).replace(/</g, "\\u003c") }}
+      />
       <section className="panel-brand rounded-[2rem]">
         <div
           aria-hidden="true"
@@ -41,6 +78,9 @@ export default function Home() {
               <br />
               לפגישות שלך
             </h1>
+            <p className="font-display text-xl sm:text-2xl text-bronze-300 mb-5">
+              הקפסולה – קליניקות מעוצבות להשכרה לפי שעה במודיעין עילית
+            </p>
             <p className="text-white/80 text-lg leading-relaxed mb-8 max-w-md">
               קליניקות יפיפיות ומאובזרות, במודל השכרה גמיש אנו מספקים פתרון
               אולטמטיבי למטפלים, יועצים, מאמנים ולכל מי שזקוק למרחב נעים ומזמין

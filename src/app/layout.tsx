@@ -5,6 +5,7 @@ import { Providers } from "@/components/providers";
 import { Sidebar } from "@/components/sidebar";
 import { ContactBanner } from "@/components/contact-banner";
 import { AnnouncementBar } from "@/components/announcement-bar";
+import { SITE_URL, SITE_NAME, SITE_TITLE, SITE_DESCRIPTION, isIndexableSite } from "@/lib/site";
 import { getShiftsProvider } from "@/lib/shifts/gate";
 import { getFinanceProvider } from "@/lib/finance/gate";
 
@@ -20,8 +21,20 @@ const frankRuhl = Frank_Ruhl_Libre({
 });
 
 export const metadata: Metadata = {
-  title: "מערכת ניהול קליניקות | הזמנת קליניקה",
-  description: "מערכת הזמנת קליניקה לחדרי הקליניקה",
+  metadataBase: new URL(SITE_URL),
+  title: { default: SITE_TITLE, template: `%s | ${SITE_NAME}` },
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  robots: isIndexableSite() ? { index: true, follow: true } : { index: false, follow: false },
+  openGraph: {
+    type: "website",
+    locale: "he_IL",
+    siteName: SITE_NAME,
+    url: "/",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+  },
+  twitter: { card: "summary_large_image", title: SITE_TITLE, description: SITE_DESCRIPTION },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -30,7 +43,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
 
   return (
     <html
-      lang="he"
+      lang="he-IL"
       dir="rtl"
       className={`${assistant.variable} ${frankRuhl.variable} h-full antialiased`}
     >
