@@ -256,3 +256,41 @@ test("תצורה (env): ברירת מחדל link; process דורש את ארבע
   blocked({ ...staging, ...proc, MAKE_PROCESS_WEBHOOK_URL: "http://hook.example/x" }, /MAKE_PROCESS_/);
   blocked({ ...staging, MAKE_PAYMENT_FLOW: "iframe" }, /MAKE_PAYMENT_FLOW/);
 });
+
+test("מסלול process: processId ברמת התהליך (data של getPaymentProcessInfo כפי שהוא) קושר עסקה שאין בה מזהה משלה", async () => {
+  const whole = (grow: Record<string, unknown>) => (_u: string, b: Body) =>
+    ok({ format: "v2", flow: "process", reference: b.reference, processId: b.processId, grow });
+  const tx = (over: Record<string, unknown> = {}) => ({ statusCode: "2", sum: "300", transactionId: "TX9", ...over });
+
+  // תהליך נכון ברמת התשובה, עסקה בלי processId -> מאושר
+  let s = setup("process", { verify: whole({ processId: "P-555", transactions: [tx()] }) });
+  let r = await s.p.createPaymentRequest(request());
+  assert.equal((await s.p.getPaymentStatus(r.providerPaymentId)).status, "SUCCEEDED");
+
+  // ברמת התשובה תהליך אחר -> נדחה גם אם העסקה עצמה "נכונה"
+  s = setup("process", { verify: whole({ processId: "P-OTHER", transactions: [tx({ processId: "P-555" })] }) });
+  r = await s.p.createPaymentRequest(request());
+  await assert.rejects(s.p.getPaymentStatus(r.providerPaymentId), PaymentError);
+
+  // עסקה עם processId של תהליך אחר -> נדחית, גם כשרמת התשובה נכונה
+  s = setup("process", { verify: whole({ processId: "P-555", transactions: [tx({ processId: "P-OTHER" })] }) });
+  r = await s.p.createPaymentRequest(request());
+  await assert.rejects(s.p.getPaymentStatus(r.providerPaymentId), PaymentError);
+
+  // אין processId בשום רמה בעסקה ששולמה -> נדחה (כשל סגור)
+  s = setup("process", { verify: whole({ transactions: [tx()] }) });
+  r = await s.p.createPaymentRequest(request());
+  await assert.rejects(s.p.getPaymentStatus(r.providerPaymentId), PaymentError);
+
+  // אין עסקאות עדיין -> ממתין
+  s = setup("process", { verify: whole({ processId: "P-555", transactions: [] }) });
+  r = await s.p.createPaymentRequest(request());
+  assert.equal((await s.p.getPaymentStatus(r.providerPaymentId)).status, "PENDING");
+});
+
+test("מסלול link: processId ברמת התשובה אינו מחליף את paymentLinkProcessId", () => {
+  assert.throws(
+    () => parseVerifyTransactions({ format: "v2", grow: { processId: "L1", transactions: [{ statusCode: "2", sum: "300", transactionId: "T" }] } }, "L1"),
+    PaymentError
+  );
+});

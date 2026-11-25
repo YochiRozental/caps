@@ -120,24 +120,56 @@ MAKE_APPROVE_API_KEY=<המפתח של תרחיש 3>
 
 בלי המשתנים האלה האתר פשוט מדלג על האישור. הפעלת החבילה לא תלויה בו.
 
-## מסלול Payment Process (createPaymentProcess): הכנה בקוד, טרם הופעל
+## מסלול Payment Process: תשלום בתוך האתר (תרחישים 4-5)
 
-האתר תומך בשני מסלולים, לפי `MAKE_PAYMENT_FLOW` (ברירת מחדל `link`, כלומר תרחישים 1-3 שלמעלה בלי שום שינוי).
-מסלול `process` מיועד לדף תשלום שניתן להטמיע ב-iframe, ודורש **שני תרחישים חדשים ונפרדים**. התרחישים הקיימים לא משתנים.
-לפני הקמתם צריך אישור מ-Grow: הרשאה ל-createPaymentProcess (דרך "Make an API Call" או userId/pageCode), ואישור הטמעה.
+דף התשלום של Payment Link (grow.link) אוסר הטמעה באתר אחר (`frame-ancestors https://grow.website`), גם ב-Sandbox וגם
+ב-Production. הדרך הרשמית להציג את טופס התשלום של Grow בתוך האתר היא **createPaymentProcess** (Light API). האתר מוכן
+לכך: הלקוח לוחץ "רכישה" פעם אחת, החלונית נפתחת מיד, וטופס Grow נטען בתוכה. אחרי התשלום Grow מחזיר את ה-iframe לדף
+החזרה שלנו, האתר מאמת מול Grow, מפעיל את החבילה, סוגר את החלונית ומציג אישור.
 
-**תרחיש יצירה (process)** → `MAKE_PROCESS_WEBHOOK_URL` / `MAKE_PROCESS_API_KEY` (מפתח חדש, לא של תרחיש 1)
-- מקבל את כל השדות של תרחיש 1, ובנוסף `flow` (תמיד `"process"`) ו-`cancelUrl` (אותו דף החזרה כמו `returnUrl`).
-- קורא ל-createPaymentProcess ב-Grow עם הסכום, התיאור, שם וטלפון, `successUrl`=`returnUrl`, `cancelUrl`, `notifyUrl`
-  ו-`cField1`=`reference`.
-- מחזיר בדיוק את אותו חוזה כמו תרחיש 1: `{"url", "processId", "processToken"}`. כשל ← HTTP 502.
-- הדומיין של `url` (למשל `sandbox.meshulam.co.il`) חייב להופיע ב-`MAKE_PAYMENT_CHECKOUT_HOSTS`.
+**תנאי מוקדם:** הרשאה מ-Grow ל-createPaymentProcess, ו-**userId + pageCode של Sandbox** (מתקבלים מ-Grow; שונים מ-Production).
+התרחישים הפעילים 1-3 לא משתנים. 4-5 הם תרחישים חדשים ונפרדים, והמעבר אליהם וממנו נעשה במשתני סביבה בלבד.
 
-**תרחיש אימות (process)** → `MAKE_PROCESS_VERIFY_WEBHOOK_URL` / `MAKE_PROCESS_VERIFY_API_KEY`
-- מקבל `reference, processId, processToken` וקורא ל-getPaymentProcessInfo.
-- מחזיר v2 עם הצהרת מסלול: `{"format":"v2","flow":"process","reference","processId","grow":{"transactions":[{"statusCode","sum","transactionId","processId"}]}}`.
-- ההבדל היחיד מ-v2 של הקישורים: כל עסקה נקשרת לתשלום דרך `processId` שלה (מזהה התהליך), במקום `paymentLinkProcessId`.
-  האתר דוחה תשובה בלי `"flow":"process"`, תשובת legacy, ועסקה שה-processId שלה שונה מהשמור.
+### הקמה (Staging בלבד)
+
+1. **Import Blueprint** ← `4-grow-create-payment-process.blueprint.json` ← **Save**.
+   - Webhooks (1): **Add** ← `Hakapsula Staging - Create Payment Process` ← API Keys ← **Add** (מפתח חדש, 24+ תווים) ← Save ← Copy address.
+   - HTTP (2): להחליף `PASTE_GROW_PAGE_CODE` ו-`PASTE_GROW_USER_ID` בערכי ה-Sandbox מ-Grow.
+   - שמירה והדלקה (ON, Immediately).
+2. **Import Blueprint** ← `5-grow-verify-payment-process.blueprint.json` ← **Save**.
+   - Webhooks (1): **Add** ← `Hakapsula Staging - Verify Payment Process` ← מפתח API חדש ← Copy address.
+   - HTTP (2): להחליף `PASTE_GROW_PAGE_CODE`.
+   - שמירה והדלקה.
+3. ב-Render (caps-staging) ← Environment:
+   ```
+   MAKE_PROCESS_WEBHOOK_URL=<כתובת תרחיש 4>
+   MAKE_PROCESS_API_KEY=<המפתח של תרחיש 4>
+   MAKE_PROCESS_VERIFY_WEBHOOK_URL=<כתובת תרחיש 5>
+   MAKE_PROCESS_VERIFY_API_KEY=<המפתח של תרחיש 5>
+   MAKE_PAYMENT_CHECKOUT_HOSTS=sandbox.grow.link,sandbox.meshulam.co.il
+   MAKE_PAYMENT_FLOW=process
+   ```
+   הגדרה חלקית של `MAKE_PROCESS_*` חוסמת את ספק התשלום כולו (כשל סגור). חזרה למסלול הקישורים: `MAKE_PAYMENT_FLOW=link`
+   (או למחוק אותו). תשלומים שנוצרו בכל מסלול ממשיכים להתאמת בתרחיש של המסלול שלהם, כל עוד ארבעת המשתנים מוגדרים.
+4. Manual Deploy (או Save, rebuild and deploy) ורכישת Sandbox אחת.
+
+### מה בודקים ברכישה הראשונה
+- בלוג של Render: `purchase timing ... framing=headers_allow+probe` (דף התשלום התיר הטמעה) ו-`outcome=checkout`.
+  אם מופיע `headers_forbid` - Grow אוסר הטמעה גם בדף הזה: החלונית תציע חלון נפרד, ויש לבקש מ-Grow אישור דומיין.
+  אחרי שהטמעה עובדת אפשר להוסיף `CHECKOUT_EMBEDDABLE_HOSTS=sandbox.meshulam.co.il` כדי לדלג על הבדיקה.
+- ב-Make History של תרחיש 5: התשובה מכילה `"flow":"process"` ו-`"grow":{...,"transactions":[...]}`. האתר קושר כל עסקה
+  לתהליך לפי `processId` של העסקה, ואם אין - לפי `processId` שבתשובת Grow עצמה. שניהם חייבים להיות התהליך שנשמר בשרת.
+  אם Grow לא מחזיר `processId` באף רמה, האימות נכשל בבטחה (התשלום נשאר ממתין, בלי זיכוי) - לשלוח צילום של התשובה.
+- בלוג: `notify make-grow outcome=PROCESSED finalize=PACKAGE_ACTIVATED`.
+
+### החוזה
+- **תרחיש 4** מקבל את כל השדות של תרחיש 1, ובנוסף `flow` (`"process"`) ו-`cancelUrl`. מחזיר `{"url","processId","processToken"}`;
+  כשל ← HTTP 502.
+- **תרחיש 5** מקבל `reference, processId, processToken`. מחזיר `{"format":"v2","flow":"process","reference","processId","grow":<data של Grow>}`.
+  האתר דוחה תשובה בלי `"flow":"process"`, מבנה legacy, ותהליך או עסקה של תהליך אחר.
 
 התראת השרת (notifyUrl), approveTransaction (תרחיש 3, שעדיין לא נבדק בפועל), השוואת הסכום, שיוך כל עסקה לרכישה אחת
-וזיכוי חד-פעמי נשארים זהים בשני המסלולים.
+וזיכוי חד-פעמי זהים בשני המסלולים.
+
+**פרטיות:** תרחיש 5 מעביר לאתר את data של Grow כפי שהוא (ייתכנו בו שם המשלם וארבע ספרות אחרונות). האתר קורא רק
+statusCode, sum, transactionId ו-processId, לא שומר את התשובה ולא רושם אותה בלוג.

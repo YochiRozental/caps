@@ -1,0 +1,308 @@
+{
+  "name": "Hakapsula | Grow Sandbox - Create Payment Process",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1,
+      "parameters": {
+        "maxResults": 1
+      },
+      "mapper": {},
+      "metadata": {
+        "designer": {
+          "x": 0,
+          "y": 0,
+          "name": "Webhook"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "module": "http:ActionSendData",
+      "version": 3,
+      "parameters": {
+        "handleErrors": false,
+        "useNewZLibDeCompress": true
+      },
+      "filter": {
+        "name": "Validated process purchase",
+        "conditions": [
+          [
+            {
+              "a": "{{1.flow}}",
+              "b": "process",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{1.purpose}}",
+              "b": "PACKAGE",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{1.currency}}",
+              "b": "ILS",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.reference; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.idempotencyKey; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.description; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.fullName; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.phone; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.amount; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.returnUrl; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.cancelUrl; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.notifyUrl; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            }
+          ]
+        ]
+      },
+      "mapper": {
+        "url": "https://sandbox.meshulam.co.il/api/light/server/1.0/createPaymentProcess",
+        "serializeUrl": false,
+        "method": "post",
+        "headers": [],
+        "qs": [],
+        "bodyType": "multipart_form_data",
+        "formDataFields": [
+          {
+            "key": "pageCode",
+            "value": "PASTE_GROW_PAGE_CODE",
+            "fieldType": "text"
+          },
+          {
+            "key": "userId",
+            "value": "PASTE_GROW_USER_ID",
+            "fieldType": "text"
+          },
+          {
+            "key": "chargeType",
+            "value": "1",
+            "fieldType": "text"
+          },
+          {
+            "key": "sum",
+            "value": "{{1.amount}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "description",
+            "value": "{{1.description}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "successUrl",
+            "value": "{{1.returnUrl}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cancelUrl",
+            "value": "{{1.cancelUrl}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "notifyUrl",
+            "value": "{{1.notifyUrl}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cField1",
+            "value": "{{1.reference}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "cField2",
+            "value": "{{1.purpose}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "pageField[fullName]",
+            "value": "{{1.fullName}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "pageField[phone]",
+            "value": "{{1.phone}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "pageField[email]",
+            "value": "{{1.email}}",
+            "fieldType": "text"
+          }
+        ],
+        "parseResponse": true,
+        "authUser": "",
+        "authPass": "",
+        "timeout": "20",
+        "shareCookies": false,
+        "ca": "",
+        "rejectUnauthorized": true,
+        "followRedirect": true,
+        "useQuerystring": false,
+        "gzip": true,
+        "useMtls": false
+      },
+      "metadata": {
+        "designer": {
+          "x": 300,
+          "y": 0,
+          "name": "Grow createPaymentProcess"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "module": "builtin:BasicRouter",
+      "version": 1,
+      "mapper": null,
+      "metadata": {
+        "designer": {
+          "x": 600,
+          "y": 0
+        }
+      },
+      "routes": [
+        {
+          "flow": [
+            {
+              "id": 4,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": {
+                "name": "Grow OK",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{2.data.status}}",
+                      "b": "1",
+                      "o": "text:equal"
+                    }
+                  ]
+                ]
+              },
+              "mapper": {
+                "status": "200",
+                "body": "{\"url\":\"{{2.data.data.url}}\",\"processId\":\"{{2.data.data.processId}}\",\"processToken\":\"{{2.data.data.processToken}}\"}",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "metadata": {
+                "designer": {
+                  "x": 900,
+                  "y": -150,
+                  "name": "Reply: payment page"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "flow": [
+            {
+              "id": 5,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": {
+                "name": "Grow error",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{2.data.status}}",
+                      "b": "1",
+                      "o": "text:notequal"
+                    }
+                  ]
+                ]
+              },
+              "mapper": {
+                "status": "502",
+                "body": "{\"error\":\"grow_create_process_failed\"}",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "metadata": {
+                "designer": {
+                  "x": 900,
+                  "y": 150,
+                  "name": "Reply: Grow error"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "instant": true,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": false,
+      "confidential": true,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": {
+      "orphans": []
+    },
+    "notes": [
+      {
+        "moduleIds": [
+          1
+        ],
+        "content": "Payment Process: create. Paste pageCode/userId of Grow Sandbox in module 2. Site env: MAKE_PROCESS_WEBHOOK_URL / MAKE_PROCESS_API_KEY"
+      }
+    ]
+  }
+}

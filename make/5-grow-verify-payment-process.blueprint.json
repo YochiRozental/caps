@@ -1,0 +1,232 @@
+{
+  "name": "Hakapsula | Grow Sandbox - Verify Payment Process",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1,
+      "parameters": {
+        "maxResults": 1
+      },
+      "mapper": {},
+      "metadata": {
+        "designer": {
+          "x": 0,
+          "y": 0,
+          "name": "Webhook"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "module": "http:ActionSendData",
+      "version": 3,
+      "parameters": {
+        "handleErrors": false,
+        "useNewZLibDeCompress": true
+      },
+      "filter": {
+        "name": "Has process ids",
+        "conditions": [
+          [
+            {
+              "a": "{{if(ifempty(1.reference; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.processId; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            },
+            {
+              "a": "{{if(ifempty(1.processToken; \"missing\") = \"missing\"; \"no\"; \"yes\")}}",
+              "b": "yes",
+              "o": "text:equal"
+            }
+          ]
+        ]
+      },
+      "mapper": {
+        "url": "https://sandbox.meshulam.co.il/api/light/server/1.0/getPaymentProcessInfo",
+        "serializeUrl": false,
+        "method": "post",
+        "headers": [],
+        "qs": [],
+        "bodyType": "multipart_form_data",
+        "formDataFields": [
+          {
+            "key": "pageCode",
+            "value": "PASTE_GROW_PAGE_CODE",
+            "fieldType": "text"
+          },
+          {
+            "key": "processId",
+            "value": "{{1.processId}}",
+            "fieldType": "text"
+          },
+          {
+            "key": "processToken",
+            "value": "{{1.processToken}}",
+            "fieldType": "text"
+          }
+        ],
+        "parseResponse": true,
+        "authUser": "",
+        "authPass": "",
+        "timeout": "20",
+        "shareCookies": false,
+        "ca": "",
+        "rejectUnauthorized": true,
+        "followRedirect": true,
+        "useQuerystring": false,
+        "gzip": true,
+        "useMtls": false
+      },
+      "metadata": {
+        "designer": {
+          "x": 300,
+          "y": 0,
+          "name": "Grow getPaymentProcessInfo"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "module": "builtin:BasicRouter",
+      "version": 1,
+      "mapper": null,
+      "metadata": {
+        "designer": {
+          "x": 600,
+          "y": 0
+        }
+      },
+      "routes": [
+        {
+          "flow": [
+            {
+              "id": 6,
+              "module": "json:TransformToJSON",
+              "version": 1,
+              "parameters": {
+                "space": ""
+              },
+              "filter": {
+                "name": "Grow OK",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{2.data.status}}",
+                      "b": "1",
+                      "o": "text:equal"
+                    }
+                  ]
+                ]
+              },
+              "mapper": {
+                "object": "{{2.data.data}}"
+              },
+              "metadata": {
+                "designer": {
+                  "x": 900,
+                  "y": -150,
+                  "name": "Grow data as JSON"
+                }
+              }
+            },
+            {
+              "id": 4,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": null,
+              "mapper": {
+                "status": "200",
+                "body": "{\"format\":\"v2\",\"flow\":\"process\",\"reference\":\"{{1.reference}}\",\"processId\":\"{{1.processId}}\",\"grow\":{{6.json}}}",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "metadata": {
+                "designer": {
+                  "x": 1200,
+                  "y": -150,
+                  "name": "Reply: transactions"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "flow": [
+            {
+              "id": 5,
+              "module": "gateway:WebhookRespond",
+              "version": 1,
+              "parameters": {},
+              "filter": {
+                "name": "Grow error",
+                "conditions": [
+                  [
+                    {
+                      "a": "{{2.data.status}}",
+                      "b": "1",
+                      "o": "text:notequal"
+                    }
+                  ]
+                ]
+              },
+              "mapper": {
+                "status": "502",
+                "body": "{\"error\":\"grow_process_info_failed\"}",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ]
+              },
+              "metadata": {
+                "designer": {
+                  "x": 900,
+                  "y": 150,
+                  "name": "Reply: Grow error"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "instant": true,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": false,
+      "confidential": true,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": {
+      "orphans": []
+    },
+    "notes": [
+      {
+        "moduleIds": [
+          1
+        ],
+        "content": "Payment Process: verify. Paste pageCode of Grow Sandbox in module 2. Site env: MAKE_PROCESS_VERIFY_WEBHOOK_URL / MAKE_PROCESS_VERIFY_API_KEY"
+      }
+    ]
+  }
+}

@@ -283,6 +283,14 @@ export function parseVerifyTransactions(
     const items = list === undefined || list === null ? [] : list;
     if (!Array.isArray(items)) throw malformed("transactions אינו מערך");
     if (items.length > MAX_TRANSACTIONS) throw malformed("יותר מדי עסקאות");
+    // מסלול process: תרחיש האימות מעביר את data של getPaymentProcessInfo כפי שהוא. אם Grow מחזיר processId ברמת
+    // התהליך, הוא חייב להיות התהליך השמור (אחרת שום עסקה לא נבדקת), ומשמש קשירה לעסקה שאין בה processId משלה.
+    // עסקה שיש בה processId - נבדקת לפיו בלבד. אין processId בשום רמה בעסקה ששולמה -> נדחה (כשל סגור)
+    let processLevelId = "";
+    if (flow === "process") {
+      processLevelId = scalar((grow as Record<string, unknown>).processId) ?? "";
+      if (processLevelId && processLevelId !== expectedProcessId) throw malformed("תשובה של תהליך תשלום אחר");
+    }
 
     const statusCodes: string[] = [];
     const paid = new Map<string, number>();
@@ -293,7 +301,7 @@ export function parseVerifyTransactions(
       const code = scalar(tx.statusCode) ?? "";
       if (!STATUS_CODE.test(code)) throw malformed("קוד סטטוס חסר או לא תקין");
       statusCodes.push(code);
-      const linkId = scalar(tx[bindingField]) ?? "";
+      const linkId = scalar(tx[bindingField]) || processLevelId;
       const transactionId = scalar(tx.transactionId) ?? "";
       if (code === GROW_PAID || code === GROW_REFUND) {
         if (!linkId) throw malformed("עסקה ללא מזהה קישור התשלום של Grow");
