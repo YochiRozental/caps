@@ -4,6 +4,7 @@ import "./globals.css";
 import { Providers } from "@/components/providers";
 import { Sidebar } from "@/components/sidebar";
 import { ContactBanner } from "@/components/contact-banner";
+import { AnnouncementBar } from "@/components/announcement-bar";
 import { getShiftsProvider } from "@/lib/shifts/gate";
 import { getFinanceProvider } from "@/lib/finance/gate";
 
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full text-stone-800 font-sans">
         <Providers>
+          <AnnouncementBar />
           <Sidebar showShifts={showShifts} showFinance={showFinance}>
             <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10">
               {children}
