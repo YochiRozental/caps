@@ -1146,4 +1146,32 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
     assert.equal(forB.length, 1);
     assert.equal((await views.getPaymentHistory(pendingUser)).length, 0);
   });
+
+  test("התאוששות בשרת (runPaymentRecovery): לקוח ששילם וסגר את האתר, בלי התראה - החבילה מופעלת פעם אחת בלבד", async () => {
+    const recovery = await import("@/lib/payments/recovery");
+    const before = await prisma.hoursPackage.count({ where: { userId: userA } });
+    const paid = await pkgs.startPackagePurchase({ userId: userA, hours: 5, clientKey: nextKey(), provider });
+    const abandoned = await pkgs.startPackagePurchase({ userId: userA, hours: 10, clientKey: nextKey(), provider });
+    await provider.completeCheckout(paid.providerPaymentId!, "success");
+    // הלקוח סגר את האתר: אין התראה ואין בדיקה מהדפדפן. התשלומים בני חצי שעה (בתוך חלון ההתאוששות)
+    const old = new Date(Date.now() - 30 * 60_000);
+    await prisma.payment.updateMany({ where: { id: { in: [paid.paymentId, abandoned.paymentId] } }, data: { createdAt: old } });
+
+    const first = await recovery.runPaymentRecovery({ provider });
+    assert.equal(first.outcomes.PACKAGE_ACTIVATED, 1);
+    assert.equal((await payOf(paid.paymentId)).status, "SUCCEEDED");
+    assert.equal((await payOf(abandoned.paymentId)).status, "PENDING");
+    const pkg = await prisma.hoursPackage.findUniqueOrThrow({ where: { paymentId: paid.paymentId } });
+    assert.equal(pkg.minutesTotal, 300);
+
+    // ריצה חוזרת מיד: התשלום שהופעל כבר לא ממתין, והנטוש בהשהיה - אין זיכוי נוסף ואין פנייה לספק
+    const second = await recovery.runPaymentRecovery({ provider });
+    assert.equal(second.checked, 0);
+    assert.equal(await prisma.hoursPackage.count({ where: { userId: userA } }), before + 1);
+
+    // תשלום מחוץ לחלון (מעל 48 שעות) לא נבדק בכלל
+    await prisma.payment.update({ where: { id: abandoned.paymentId }, data: { createdAt: new Date(Date.now() - 49 * 60 * 60_000) } });
+    const third = await recovery.runPaymentRecovery({ provider, now: new Date(Date.now() + 7 * 60 * 60_000) });
+    assert.equal(third.scanned, 0);
+  });
 });

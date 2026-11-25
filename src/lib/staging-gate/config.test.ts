@@ -97,8 +97,12 @@ test("מפתח שירות תקף רק מעל האורך המינימלי", () =>
   assert.equal(isValidServiceKey({ STAGING_GATE_SERVICE_KEY: "k".repeat(MIN_SERVICE_KEY_LENGTH) }), true);
 });
 
-test("רשימת הנתיבים המורשים למפתח שירות ריקה כרגע בכוונה - אין עדיין נתיב Make מאושר", () => {
-  assert.deepEqual(SERVICE_KEY_ALLOWED_PATHS, []);
+test("מפתח שירות פותח רק את נתיב ההתאוששות, בהתאמה מדויקת - לא עמודים, לא /admin ולא נתיבי API אחרים", () => {
+  assert.equal(SERVICE_KEY_ALLOWED_PATHS.length, 1);
+  assert.equal(isServiceKeyAllowedPath("/api/cron/payment-recovery"), true);
+  for (const p of ["/api/cron/payment-recovery/", "/api/cron/payment-recovery/x", "/api/cron/payment-recoveryx", "/api/cron/shift-billing", "/x/api/cron/payment-recovery"]) {
+    assert.equal(isServiceKeyAllowedPath(p), false, p);
+  }
   assert.equal(isServiceKeyAllowedPath("/api/payments/webhook/grow"), false);
   assert.equal(isServiceKeyAllowedPath("/admin"), false);
   assert.equal(isServiceKeyAllowedPath("/"), false);

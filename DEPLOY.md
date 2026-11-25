@@ -76,6 +76,19 @@ npx prisma migrate status      # צפוי: Database schema is up to date
 - **בדיקת הצלחה:** הסקריפט מסיים בקוד 0 רק כשהתשובה `DONE` עם `status: SUCCEEDED` (או ALREADY_RUNNING). `PARTIAL`/`FAILED`/שגיאת HTTP/חריגת זמן (120 שניות, עד 3 ניסיונות) = קוד 1, ו-Render מסמן כישלון (להפעיל התראה במייל). פירוט כל ריצה: במסך המנהל "משמרות" > "חיוב חודשי", או `SELECT status, trigger, "startedAt", summary FROM "CronRun" ORDER BY "startedAt" DESC LIMIT 5;`.
 - **404 מהשרת** = השער סגור (`SHIFTS_ENABLED`/ספק) או `CRON_SECRET` קצר מ-24 תווים. **401** = הסוד אינו זהה.
 
+### 4א. התאוששות תשלומים ממתינים (לא נוצר עדיין)
+
+מפעיל תשלומים ששולמו אבל נשארו ממתינים (הלקוח סגר את האתר וההתראה מ-Grow לא הגיעה). אותו אימות וזיכוי חד-פעמי כמו
+התראה, לשני המסלולים (link/process). לא יוצר קישורי תשלום ולא מחייב.
+
+- **Command:** `node scripts/cron-payment-recovery.mjs`. **Schedule:** `*/15 * * * *` (כל 15 דקות).
+- **משתני סביבה:** `SITE_URL`, `CRON_SECRET` (כמו בסעיף 4). ב-Staging בלבד גם `STAGING_GATE_SERVICE_KEY` (אותו ערך כמו בשירות),
+  כי השער פותח למפתח השירות את הנתיב `/api/cron/payment-recovery` בלבד, ובנוסף נדרש `CRON_SECRET`.
+- **עלות פעולות Make:** רק תשלומים בני 2 דקות עד 48 שעות, עד 20 בדיקות לריצה, והשהיה לכל תשלום שגדלה עם הגיל (5 דקות
+  עד 6 שעות). תשלום נטוש נבדק בערך 20 פעמים בסך הכול. ריצה בלי תשלומים ממתינים לא פונה ל-Make כלל.
+- **לוג:** `[payments] recovery scanned=… checked=… backoff=… noRef=… transient=… errors=… outcomes=…` (מספרים בלבד).
+- **Staging ב-Render Free:** קריאת ה-Cron מעירה את השירות, ולכן הריצה הראשונה אחרי שינה עשויה להימשך עד דקה.
+
 ## 5. בדיקות תקינות אחרי הפריסה
 
 1. `/login` נטען; כניסת מנהל; `/admin/shifts` ו-`/admin/finance` נפתחים.

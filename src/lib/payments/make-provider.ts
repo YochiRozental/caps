@@ -473,6 +473,19 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
     }
   }
 
+  /**
+   * בקשת תשלום שכבר נוצרה לפי מפתח ה-idempotency, בלי שום פנייה ל-Make (להתאוששות בשרת). null כשאין תוצאה ידועה:
+   * לא נוצר קישור, או שמצב הבקשה לא ידוע - ואז לא מנחשים ולא יוצרים קישור חדש
+   */
+  async findExistingPaymentRequest(idempotencyKey: string): Promise<PaymentRequestResult | null> {
+    if (!idempotencyKey) return null;
+    const claim = await this.store.get<MakeCreateClaim>(`make-create:${idempotencyKey}`);
+    if (claim?.state === "done" && claim.result) return claim.result;
+    const providerPaymentId = deriveMakePaymentId(idempotencyKey);
+    const record = await this.store.get<MakePaymentRecord>(`make-payment:${providerPaymentId}`);
+    return record?.checkoutUrl ? { providerPaymentId, status: "PENDING", checkoutUrl: record.checkoutUrl } : null;
+  }
+
   private returnUrlFor(input: CreatePaymentRequestInput): string | undefined {
     const base = this.cfg.returnBaseUrl?.replace(/[/]+$/, "");
     const id = input.metadata?.appointmentId;

@@ -41,12 +41,12 @@ const PUBLIC_ASSET_PREFIXES = ["/brand/"];
 export type ServiceKeyAllowedPaths = RegExp[];
 
 /**
- * נתיבי API שמורשים לעבור אימות שרת-לשרת (מפתח שירות) בלבד - לעולם לא עמודי אתר, ולעולם לא /admin. ריקה
- * בכוונה כרגע: אין עדיין נתיב Make מסוים ומאושר (התרחיש עדיין לא נבדק). יש להוסיף לרשימה הזו נתיב-נתיב,
- * במפורש, כש-תרחיש ה-Make הסופי נקבע - ולעולם לא תבנית גורפת כמו /^\/api\//. עד אז מפתח השירות לא פותח
- * שום נתיב, כדי שלא יהפוך בטעות לעקיפה כללית של ההגנה.
+ * נתיבי API שמורשים לעבור אימות שרת-לשרת (מפתח שירות) בלבד - לעולם לא עמודי אתר, ולעולם לא /admin. מוסיפים
+ * נתיב-נתיב, בהתאמה מדויקת - לעולם לא תבנית גורפת כמו /^\/api\//, כדי שהמפתח לא יהפוך לעקיפה כללית של ההגנה.
+ *  - /api/cron/payment-recovery: התאוששות תשלומים ממתינים, למתזמן חיצוני. הנתיב עצמו דורש גם CRON_SECRET, כך
+ *    שב-Staging נדרשים שני סודות נפרדים.
  */
-export const SERVICE_KEY_ALLOWED_PATHS: ServiceKeyAllowedPaths = [];
+export const SERVICE_KEY_ALLOWED_PATHS: ServiceKeyAllowedPaths = [/^\/api\/cron\/payment-recovery$/];
 
 export function isServiceKeyAllowedPath(pathname: string, allowedPaths: ServiceKeyAllowedPaths = SERVICE_KEY_ALLOWED_PATHS): boolean {
   return allowedPaths.some((re) => re.test(pathname));
