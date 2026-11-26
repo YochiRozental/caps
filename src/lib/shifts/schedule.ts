@@ -8,6 +8,8 @@ import { isUniqueViolation } from "@/lib/payments/shared";
 import { CONFLICTING_ROOM_KEYS, ROOM_KEYS } from "@/lib/rooms";
 import { ensureRooms } from "@/lib/rooms-db";
 import {
+  parseIso,
+  weekdayOf,
   billingDueDates,
   billingMonths,
   occurrenceDatesBetween,
@@ -221,10 +223,22 @@ function resultFor(shift: { id: string; status: string; occurrencePriceAgorot: n
  * המשמרת מאושרת מיד באישור המנהל. החיוב הראשון מועדו היום, השני והשלישי חודש וחודשיים אחרי תאריך ההתחלה.
  * אידמפוטנטי לפי clientKey (לחיצה כפולה/רענון מחזירים את אותה משמרת).
  */
+/**
+ * היום בשבוע של משמרת נגזר מתאריך ההתחלה, ולכן תאריך ההתחלה הוא תמיד מועד המפגש הראשון. יום שנשלח במפורש חייב להתאים
+ * לתאריך (אחרת INVALID); שבת נדחית בבדיקת היום הקיימת (planOccurrences)
+ */
+export function shiftWeekdayForStart(startDate: string, requested?: number): number {
+  if (!parseIso(startDate)) throw new ShiftError("תאריך התחלה לא תקין", "INVALID");
+  const weekday = weekdayOf(startDate);
+  if (requested !== undefined && requested !== weekday) throw new ShiftError("היום אינו תואם לתאריך ההתחלה", "INVALID");
+  return weekday;
+}
+
 export async function createShift(
-  params: PlanInput & { clientKey: string; createdById: string; db?: PrismaClient }
+  params: Omit<PlanInput, "weekday"> & { weekday?: number; clientKey: string; createdById: string; db?: PrismaClient }
 ): Promise<CreateShiftResult> {
-  const { userId, roomKey, weekday, windowId, startDate, clientKey, createdById, now = new Date(), db = defaultDb } = params;
+  const { userId, roomKey, windowId, startDate, clientKey, createdById, now = new Date(), db = defaultDb } = params;
+  const weekday = shiftWeekdayForStart(startDate, params.weekday);
 
   await assertShiftEligible(userId, db);
   // משמרת נקבעת בתיאום עם מנהל בלבד: לקוח אינו רשאי ליצור אותה בעצמו (נבדק מול המסד, לא מול הבקשה)

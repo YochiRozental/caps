@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 }
 
 /**
- * יצירת משמרת עבור לקוח ע"י מנהל, בתשלום ידני: אין כרטיס שמור ואין חיוב אוטומטי, והמנהל מתעד כל תשלום שהתקבל.
+ * יצירת משמרת עבור לקוח ע"י מנהל, בתשלום ידני. היום בשבוע נגזר מתאריך ההתחלה, שהוא המפגש הראשון. אין כרטיס שמור ואין חיוב אוטומטי, והמנהל מתעד כל תשלום שהתקבל.
  * הלקוח חייב להיות זכאי (אישור זכאות נבדק בשרת). בדיקות התנגשות, שעות פעילות ומסלול זהות להזמנה רגילה.
  * אידמפוטנטי לפי clientKey.
  */
@@ -38,11 +38,12 @@ export async function POST(request: Request) {
   const body = await readJson(request);
   const userId = str(body?.userId);
   const roomKey = str(body?.roomKey) as RoomKey | undefined;
+  // היום נגזר מתאריך ההתחלה (המפגש הראשון). יום שנשלח בכל זאת חייב להיות מספר ולהתאים לתאריך (נבדק ב-createShift)
   const weekday = int(body?.weekday);
   const windowId = str(body?.windowId);
   const startDate = str(body?.startDate);
   const clientKey = str(body?.clientKey);
-  if (!userId || !roomKey || weekday === undefined || !windowId || !startDate || !clientKey) {
+  if (!userId || !roomKey || !windowId || !startDate || !clientKey || (body?.weekday !== undefined && weekday === undefined)) {
     return NextResponse.json({ error: "חסרים פרטים ליצירת המשמרת" }, { status: 400 });
   }
   try {

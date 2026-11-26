@@ -135,9 +135,9 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
 
   // ───────────── עזרים ─────────────
   type Over = Partial<Parameters<typeof svc.createShift>[0]>;
-  /** יצירה ע"י מנהל (הדרך היחידה ליצור משמרת): תשלום ידני, אין חיוב אוטומטי */
+  /** יצירה ע"י מנהל (הדרך היחידה ליצור משמרת): תשלום ידני, אין חיוב אוטומטי. היום נגזר מתאריך ההתחלה (ברירת מחדל: שני 15.2) */
   const create = (userId: string, over: Over = {}) =>
-    svc.createShift({ userId, roomKey: "ROOM3", weekday: 1, windowId: "MORNING", startDate: START, clientKey: key(), createdById: ids.admin, now: NOW, ...over });
+    svc.createShift({ userId, roomKey: "ROOM3", windowId: "MORNING", startDate: START, clientKey: key(), createdById: ids.admin, now: NOW, ...over });
   /** מנהל מתעד שהתשלום של תקופה התקבל (בסכום המדויק, בתאריך המועד) */
   async function pay(shiftId: string, month: string) {
     const charge = await chargeOf(shiftId, month);
@@ -257,13 +257,15 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     }
   });
 
-  test("אין חישוב יחסי: חיוב ראשון מלא גם כשהמפגש הראשון רחוק מתאריך ההתחלה; התחלה עתידית: מועד החיוב הראשון בעת האישור, והשני והשלישי לפי תאריך ההתחלה", async () => {
-    // התחלה ביום רביעי 17.2: המפגש הראשון ב-22.2. החיוב הראשון מלא (480 ₪), לא יחסי
+  test("אין חישוב יחסי: חיוב ראשון מלא; התחלה עתידית: מועד החיוב הראשון בעת האישור, והשני והשלישי לפי תאריך ההתחלה", async () => {
+    // התחלה ביום רביעי 17.2: המשמרת ביום רביעי והמפגש הראשון בדיוק ב-17.2. החיוב הראשון מלא (480 ₪), לא יחסי
     const mid = await createOk(ids.a, { startDate: "2027-02-17" });
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: mid } })).weekday, 3);
+    assert.equal((await prisma.shiftOccurrence.findFirstOrThrow({ where: { shiftId: mid }, orderBy: { date: "asc" } })).date, "2027-02-17");
     const ch = await chargeOf(mid, "2027-02");
     assert.deepEqual([ch.amountAgorot, ch.status, ch.dueDate], [MONTHLY, "PAID", "2027-02-15"], "מועדו בעת האישור (15.2)");
 
-    // התחלה עתידית (26.2): מועד החיוב הראשון הוא יום האישור, השני והשלישי חודש וחודשיים אחרי תאריך ההתחלה
+    // התחלה עתידית (שישי 26.2): מועד החיוב הראשון הוא יום האישור, השני והשלישי חודש וחודשיים אחרי תאריך ההתחלה
     const future = await create(ids.b, { startDate: "2027-02-26", roomKey: "ROOM4" });
     assert.equal(future.status, "ACTIVE");
     assert.deepEqual((await chargesOf(future.shiftId)).map((c) => [c.month, c.dueDate, c.status]), [["2027-02", "2027-02-15", "PENDING"], ["2027-03", "2027-03-26", "PENDING"], ["2027-04", "2027-04-26", "PENDING"]]);
@@ -325,13 +327,28 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
 
   test("שעות הפעילות והמסלול נאכפים: שישי נסגר ב-12:00 (צהריים נדחה, בוקר מתקבל); לקוחה במסלול בנות לא מזמינה יום בנים; ערב 19–22 בתוך הפעילות", async () => {
     // שישי: 07:00–12:00 בלבד. משבצת צהריים (11–15) חורגת בכל 13 השישיים, בוקר (7–11) מתקבלת
-    await assert.rejects(() => create(ids.a, { weekday: 5, windowId: "NOON" }), (e: { code: string; details?: { conflicts: unknown[] } }) => e.code === "CONFLICT" && (e.details?.conflicts.length ?? 0) === SESSIONS);
-    await createOk(ids.a, { weekday: 5, windowId: "MORNING" });
+    await assert.rejects(() => create(ids.a, { startDate: "2027-02-19", windowId: "NOON" }), (e: { code: string; details?: { conflicts: unknown[] } }) => e.code === "CONFLICT" && (e.details?.conflicts.length ?? 0) === SESSIONS);
+    await createOk(ids.a, { startDate: "2027-02-19", windowId: "MORNING" });
     // ערב 19:00–22:00 בתוך שעות הפעילות (א'–ה' עד 24:00)
     await createOk(ids.a, { windowId: "EVENING", roomKey: "ROOM2" });
     await assert.rejects(() => create(ids.female), { code: "CONFLICT" }, "יום שני הוא מסלול בנים");
-    await createOk(ids.female, { weekday: 2 }); // יום שלישי: מסלול בנות
+    await createOk(ids.female, { startDate: "2027-02-16" }); // יום שלישי: מסלול בנות
     assert.equal(await prisma.shift.count({}), 3);
+  });
+
+  test("רגרסיה: היום נגזר מתאריך ההתחלה, שהוא המפגש הראשון; יום שאינו תואם לתאריך נדחה, וכך גם שבת", async () => {
+    // תאריך בלבד (רביעי 17.2): היום נגזר, והמפגש הראשון הוא בדיוק תאריך ההתחלה
+    const id = await createOk(ids.a, { startDate: "2027-02-17" });
+    const shift = await prisma.shift.findUniqueOrThrow({ where: { id }, include: { occurrences: { orderBy: { date: "asc" } } } });
+    assert.deepEqual([shift.weekday, shift.startDate, shift.occurrences[0].date], [3, "2027-02-17", "2027-02-17"]);
+    // יום שנשלח במפורש ותואם לתאריך: מתקבל
+    await createOk(ids.b, { startDate: "2027-02-17", weekday: 3, roomKey: "ROOM4" });
+    // יום שאינו תואם לתאריך (שני מול רביעי): נדחה בלי ליצור דבר
+    const before = await prisma.shift.count({});
+    await assert.rejects(() => create(ids.a, { startDate: "2027-02-17", weekday: 1, roomKey: "ROOM2" }), { code: "INVALID", message: "היום אינו תואם לתאריך ההתחלה" });
+    // שבת (20.2): נדחית
+    await assert.rejects(() => create(ids.a, { startDate: "2027-02-20", roomKey: "ROOM2" }), { code: "INVALID" });
+    assert.equal(await prisma.shift.count({}), before);
   });
 
   // ───────────── ימים סגורים ושעות פעילות ─────────────
@@ -891,7 +908,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     assert.equal((await views.getMyShifts({ userId: ids.b, now: new Date() })).shifts[0].makeups[0].state, "EXPIRED");
 
     // מימוש עצמי של הלקוח: החזקה ואישור מהיתרה (אותו מסלול של כל יתרת דקות), בלי ניצול כפול
-    const own = await closedOccurrence(ids.female, { weekday: 2, roomKey: "ROOM1" }, "2027-03-09");
+    const own = await closedOccurrence(ids.female, { startDate: "2027-02-16", roomKey: "ROOM1" }, "2027-03-09");
     const hold = await payBooking.holdRoom({ userId: ids.female, roomKey: "ROOM2", startTime: new Date("2027-03-11T12:00:00+02:00"), endTime: new Date("2027-03-11T13:00:00+02:00"), source: "WEB", now: NOW });
     const confirmed = await payBooking.confirmBookingFromBalance({ appointmentId: hold.id, userId: ids.female, provider, now: NOW });
     assert.equal(confirmed.outcome, "CONFIRMED");

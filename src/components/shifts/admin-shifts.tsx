@@ -6,6 +6,7 @@ import { Alert, EmptyState, Loading, SectionTitle } from "@/components/ui";
 import { Dialog, ToneBadge, jerusalemTime } from "@/components/shifts/bits";
 import { WindowsTab } from "@/components/shifts/windows-tab";
 import { todayIsoDate } from "@/lib/slots";
+import { parseIso, weekdayOf } from "@/lib/shifts/calendar";
 import { windowLabelOf, windowPriceFor, type ShiftWindowDef } from "@/lib/shifts/windows";
 import { api, shekel, useSingleFlight } from "@/lib/payments/client";
 import { ROOM_KEYS, ROOM_LABELS } from "@/lib/rooms";
@@ -211,9 +212,12 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
   const [windows, setWindows] = useState<ShiftWindowDef[] | null>(null);
   const [userId, setUserId] = useState(customers[0]?.id ?? "");
   const [roomKey, setRoomKey] = useState<string>("ROOM3");
-  const [weekday, setWeekday] = useState(0);
   const [windowId, setWindowId] = useState("");
   const [startDate, setStartDate] = useState(todayIsoDate());
+  // היום בשבוע נגזר מתאריך ההתחלה (המפגש הראשון) ומוצג לקריאה בלבד. השרת מחשב אותו שוב ואינו סומך על הדפדפן
+  const weekday = parseIso(startDate) ? weekdayOf(startDate) : null;
+  const dayLabel = weekday === null ? null : weekday === 6 ? null : WEEKDAY_NAMES[weekday];
+  const dayError = !parseIso(startDate) ? "יש לבחור תאריך התחלה" : weekday === 6 ? "אין משמרות בשבת: יש לבחור יום אחר" : null;
   const [error, setError] = useState<string | null>(null);
   const clientKey = useRef(globalThis.crypto.randomUUID().replace(/-/g, ""));
   const { busy, run } = useSingleFlight();
@@ -230,7 +234,7 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
   async function submit() {
     await run(async () => {
       setError(null);
-      const res = await api<{ status?: string }>("/api/admin/shifts", { body: { userId, roomKey, weekday, windowId, startDate, clientKey: clientKey.current } });
+      const res = await api<{ status?: string }>("/api/admin/shifts", { body: { userId, roomKey, windowId, startDate, clientKey: clientKey.current } });
       if (res.ok && res.data.status === "ACTIVE") onCreated("המשמרת נוצרה. התשלומים יתועדו ידנית.");
       else {
         const message = res.data.error ?? "לא ניתן ליצור את המשמרת";
@@ -267,14 +271,6 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
               </select>
             </div>
             <div>
-              <label className="field-label" htmlFor="cs-day">יום</label>
-              <select id="cs-day" className="field" value={weekday} onChange={(e) => setWeekday(Number(e.target.value))}>
-                {WEEKDAY_NAMES.map((n, i) => (
-                  <option key={n} value={i}>{n}</option>
-                ))}
-              </select>
-            </div>
-            <div>
               <label className="field-label" htmlFor="cs-window">משבצת</label>
               <select id="cs-window" className="field" value={windowId} onChange={(e) => setWindowId(e.target.value)}>
                 {windows.map((w) => (
@@ -286,14 +282,22 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
               <label className="field-label" htmlFor="cs-start">תאריך התחלה</label>
               <input id="cs-start" type="date" className="field" value={startDate} min={todayIsoDate()} onChange={(e) => setStartDate(e.target.value)} />
             </div>
+            <div>
+              <span className="field-label" id="cs-day-label">יום בשבוע</span>
+              <p className="field bg-cream-50 text-stone-700" aria-labelledby="cs-day-label" aria-live="polite" data-testid="cs-day">
+                {dayLabel ? `יום ${dayLabel}` : "—"}
+              </p>
+              <p className="text-xs text-stone-500 mt-1">נגזר מתאריך ההתחלה, שהוא המפגש הראשון</p>
+            </div>
           </div>
           <p className="text-xs text-stone-500">תשלום ידני בתיאום: אין חיוב אוטומטי, וכל תשלום שהתקבל מתועד ידנית בכרטיס המשמרת.</p>
+          {dayError && startDate && <Alert tone="error">{dayError}</Alert>}
           {error && <Alert tone="error">{error}</Alert>}
           <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
             <button type="button" className="btn btn-secondary" disabled={busy} onClick={onClose}>
               חזרה
             </button>
-            <button type="button" className="btn btn-primary" disabled={busy || !userId || !windowId} onClick={submit}>
+            <button type="button" className="btn btn-primary" disabled={busy || !userId || !windowId || !!dayError} onClick={submit}>
               {busy ? "יוצר..." : "יצירת משמרת"}
             </button>
           </div>
