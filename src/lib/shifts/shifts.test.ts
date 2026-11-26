@@ -107,7 +107,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
       ["EVENING", "ערב", 19, 22, 50000],
     ] as const;
     for (const [i, [id, name, from, to, price]] of defaults.entries()) {
-      const data = { name, startMinutes: from * 60, endMinutes: to * 60, monthlyPriceAgorot: price, active: true, sortOrder: i + 1 };
+      const data = { name, startMinutes: from * 60, endMinutes: to * 60, monthlyPriceAgorot: price, workshopMonthlyPriceAgorot: price * 2, active: true, sortOrder: i + 1 };
       await prisma.shiftWindow.upsert({ where: { id }, update: data, create: { id, ...data } });
     }
   }
@@ -219,11 +219,27 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
 
   // ───────────── יצירה, תמחור ותקופה ─────────────
 
+  test("חדר סדנאות: המשמרת מתומחרת בכפול מהמחיר הרגיל של המשבצת, וחדר רגיל באותה משבצת במחיר הרגיל", async () => {
+    const regular = await create(ids.a, { windowId: "AFTERNOON", roomKey: "ROOM3" });
+    const workshop = await create(ids.b, { windowId: "AFTERNOON", roomKey: "WORKSHOP" });
+    assert.deepEqual([regular.status, workshop.status], ["ACTIVE", "ACTIVE"]);
+    const rows = await prisma.shift.findMany({ where: { id: { in: [regular.shiftId, workshop.shiftId] } } });
+    const monthly = (id: string) => rows.find((r) => r.id === id)!.monthlyPriceAgorot;
+    assert.equal(monthly(regular.shiftId), 60000);
+    assert.equal(monthly(workshop.shiftId), 120000);
+    assert.equal(monthly(workshop.shiftId), 2 * monthly(regular.shiftId));
+    const occ = await prisma.shiftOccurrence.findMany({ where: { shiftId: workshop.shiftId } });
+    assert.ok(occ.every((o) => o.priceAgorot > 0));
+    const regOcc = await prisma.shiftOccurrence.findMany({ where: { shiftId: regular.shiftId } });
+    const sum = (rows: { priceAgorot: number }[]) => rows.reduce((n, o) => n + o.priceAgorot, 0);
+    assert.ok(Math.abs(sum(occ) - 2 * sum(regOcc)) <= occ.length, "מחירי המופעים של סדנאות כפולים (עד עיגול לאגורה)");
+  });
+
   test("יצירת משמרת לכל אחת מארבע המשבצות: מחיר חודשי קבוע, מפגשים כהזמנות מאושרות, שלושה חיובים והחיוב הראשון בלבד", async () => {
     const expected: [string, string, number][] = [
       ["MORNING", "ROOM3", 48000],
       ["NOON", "ROOM4", 52500],
-      ["AFTERNOON", "WORKSHOP", 60000],
+      ["AFTERNOON", "WORKSHOP", 120000], // חדר סדנאות: כפול מהמחיר הרגיל של המשבצת (60000)
       ["EVENING", "ROOM2", 50000],
     ];
     for (const [windowId, roomKey, monthly] of expected) {

@@ -9,7 +9,7 @@ import { ROOM_KEYS, ROOM_LABELS } from "@/lib/rooms";
 import { todayIsoDate } from "@/lib/slots";
 import { weekdayOf } from "@/lib/shifts/calendar";
 import { ShiftPriceTable } from "@/components/shifts/price-table";
-import { windowLabelOf, type ShiftWindowDef } from "@/lib/shifts/windows";
+import { windowLabelOf, windowPriceFor, type ShiftWindowDef } from "@/lib/shifts/windows";
 import {
   CHARGE_STATUS_TEXT,
   OCCURRENCE_STATUS_TEXT,
@@ -471,7 +471,7 @@ function NewShift({ windows, hasCard, mockCardLink, onCreated }: { windows: Shif
           <select id="ns-window" className={select} value={windowId} onChange={(e) => setWindowId(e.target.value)}>
             {activeWindows.map((w) => (
               <option key={w.id} value={w.id}>
-                {windowLabelOf(w)} · {shekel(w.monthlyPriceAgorot)} לחודש
+                {windowLabelOf(w)} · {shekel(windowPriceFor(w, roomKey))} לחודש
               </option>
             ))}
           </select>

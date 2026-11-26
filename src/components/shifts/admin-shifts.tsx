@@ -6,7 +6,7 @@ import { Alert, EmptyState, Loading, SectionTitle } from "@/components/ui";
 import { Dialog, ToneBadge, jerusalemTime } from "@/components/shifts/bits";
 import { WindowsTab } from "@/components/shifts/windows-tab";
 import { todayIsoDate } from "@/lib/slots";
-import { windowLabelOf, type ShiftWindowDef } from "@/lib/shifts/windows";
+import { windowLabelOf, windowPriceFor, type ShiftWindowDef } from "@/lib/shifts/windows";
 import { api, shekel, useSingleFlight } from "@/lib/payments/client";
 import { ROOM_KEYS, ROOM_LABELS } from "@/lib/rooms";
 import {
@@ -279,7 +279,7 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
               <label className="field-label" htmlFor="cs-window">משבצת</label>
               <select id="cs-window" className="field" value={windowId} onChange={(e) => setWindowId(e.target.value)}>
                 {windows.map((w) => (
-                  <option key={w.id} value={w.id}>{windowLabelOf(w)} · {shekel(w.monthlyPriceAgorot)}</option>
+                  <option key={w.id} value={w.id}>{windowLabelOf(w)} · {shekel(windowPriceFor(w, roomKey))}</option>
                 ))}
               </select>
             </div>

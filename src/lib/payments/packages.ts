@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { findHoursPackage, packageExpiry, packageMinutes } from "@/lib/payments/pricing";
-import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
+import { getRegularPricing, packageOptionsFor } from "@/lib/payments/pricing-db";
 import type { PaymentProvider } from "@/lib/payments/provider";
 import {
   PaymentFlowError,
@@ -22,6 +22,8 @@ export interface StartedPackagePurchase {
   providerPaymentId?: string;
   checkoutUrl?: string;
   hours: number;
+  /** כרטיסיית חדר סדנאות */
+  workshop: boolean;
   amountAgorot: number;
   status: string;
 }
@@ -34,10 +36,12 @@ export interface StartedPackagePurchase {
 export async function startPackagePurchase(params: {
   userId: string;
   hours: number;
+  /** כרטיסיית חדר סדנאות (מחיר נפרד, ומנוצלת רק להזמנות בחדר סדנאות). ברירת מחדל: כרטיסייה רגילה */
+  workshop?: boolean;
   clientKey: string;
   provider: PaymentProvider;
 }): Promise<StartedPackagePurchase> {
-  const { userId, hours, clientKey, provider } = params;
+  const { userId, hours, clientKey, provider, workshop = false } = params;
 
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true, status: true } });
   if (!user) throw new PaymentFlowError("המשתמש לא נמצא", "NOT_FOUND");
@@ -46,7 +50,7 @@ export async function startPackagePurchase(params: {
     throw new PaymentFlowError("רק לקוח מאושר רשאי לרכוש חבילה", "FORBIDDEN");
   }
   const pricing = await getRegularPricing();
-  const option = findHoursPackage(hours, hoursPackageOptions(pricing));
+  const option = findHoursPackage(hours, packageOptionsFor(pricing, workshop));
   if (!option) throw new PaymentFlowError("חבילה לא קיימת", "INVALID");
   if (!CLIENT_KEY.test(clientKey)) throw new PaymentFlowError("מפתח הבקשה אינו תקין", "INVALID");
 
@@ -58,6 +62,7 @@ export async function startPackagePurchase(params: {
         userId,
         purpose: "PACKAGE",
         packageHours: option.hours,
+        packageWorkshop: workshop,
         amountAgorot: option.priceAgorot,
         status: "PENDING",
         environment: environmentOf(provider),
@@ -68,7 +73,7 @@ export async function startPackagePurchase(params: {
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     payment = await prisma.payment.findUniqueOrThrow({ where: { idempotencyKey } });
-    if (payment.userId !== userId || payment.purpose !== "PACKAGE" || payment.packageHours !== option.hours) {
+    if (payment.userId !== userId || payment.purpose !== "PACKAGE" || payment.packageHours !== option.hours || payment.packageWorkshop !== workshop) {
       throw new PaymentFlowError("מפתח הבקשה כבר שימש לרכישה אחרת", "CONFLICT");
     }
   }
@@ -78,6 +83,7 @@ export async function startPackagePurchase(params: {
       paymentId: payment.id,
       providerPaymentId: payment.providerPaymentId ?? undefined,
       hours: option.hours,
+      workshop,
       amountAgorot: payment.amountAgorot,
       status: payment.status,
     };
@@ -87,10 +93,10 @@ export async function startPackagePurchase(params: {
   const request = await provider.createPaymentRequest({
     amountAgorot: payment.amountAgorot,
     currency: "ILS",
-    description: `רכישת חבילת ${option.hours} שעות`,
+    description: `רכישת חבילת ${option.hours} שעות${workshop ? " (חדר סדנאות)" : ""}`,
     idempotencyKey: payment.idempotencyKey,
     customerRef: userId,
-    metadata: { packageHours: String(option.hours) },
+    metadata: { packageHours: String(option.hours), ...(workshop ? { packageWorkshop: "true" } : {}) } as Record<string, string>,
   });
   if (!payment.providerPaymentId) {
     await prisma.payment.updateMany({
@@ -104,6 +110,7 @@ export async function startPackagePurchase(params: {
     providerPaymentId: request.providerPaymentId,
     checkoutUrl: request.checkoutUrl,
     hours: option.hours,
+    workshop,
     amountAgorot: payment.amountAgorot,
     status: payment.status,
   };
@@ -196,6 +203,7 @@ export async function finalizePackagePayment(params: {
         data: {
           userId: payment.userId,
           hours,
+          workshop: payment.packageWorkshop,
           pricePaidAgorot: payment.amountAgorot,
           minutesTotal: packageMinutes(hours),
           minutesRemaining: packageMinutes(hours),

@@ -583,7 +583,7 @@ export async function grantMakeupCredits(db: PrismaClient, now: Date, filter: { 
       shift: { status: "ACTIVE", ...(filter.shiftId ? { id: filter.shiftId } : {}) },
       ...(filter.date ? { date: filter.date } : {}),
     },
-    include: { shift: { select: { userId: true } } },
+    include: { shift: { select: { userId: true, room: { select: { key: true } } } } },
     take: 500,
   });
   let granted = 0;
@@ -598,6 +598,8 @@ export async function grantMakeupCredits(db: PrismaClient, now: Date, filter: { 
             userId: occ.shift.userId,
             minutesTotal: duration,
             minutesRemaining: duration,
+            // שעה חלופית של משמרת בחדר סדנאות מנוצלת רק בחדר סדנאות
+            workshop: occ.shift.room.key === "WORKSHOP",
             expiresAt: new Date(now.getTime() + MAKEUP_CREDIT_VALIDITY_DAYS * 24 * 3_600_000),
             reason: `shift_makeup:${occ.id}`,
             sourceAppointmentId: occ.appointmentId,

@@ -5,8 +5,7 @@ import { BookingError, createBookingHold } from "@/lib/booking";
 import { cancelBooking, quoteHold } from "@/lib/payments/booking-payment";
 import { authorizeWithPin, type AuthorizedAction } from "@/lib/payments/authorization";
 import { executeAuthorizedBooking, type AuthorizedBookingResult } from "@/lib/payments/authorized-actions";
-import { regularPriceAgorot } from "@/lib/payments/pricing";
-import { getRegularPricing } from "@/lib/payments/pricing-db";
+
 import { findUsableCard } from "@/lib/payments/saved-methods";
 import { getRuntimeProvider } from "@/lib/payments/runtime";
 import { getHoldDetails } from "@/lib/payments/views";
@@ -141,7 +140,7 @@ export async function runPaidBooking(
     if (!quote.fullyCoveredByBalance && !card) return end(MSG.noCard, { release: true });
 
     const action: AuthorizedAction = quote.fullyCoveredByBalance ? "CONFIRM_BALANCE" : "PAY_CARD";
-    const price = regularPriceAgorot(quote.durationMinutes, (await getRegularPricing()).hourlyAgorot);
+    const price = quote.fullPriceAgorot;
     const sandbox = provider.environment === "sandbox" ? "סביבת בדיקות, " : "";
     const last4 = card?.last4 ? card.last4.split("").join(" ") : "";
     // הנחת 25% להזמנה ראשונה כבר נכללת ב-quote.cashAgorot (ראו quoteHold); כאן רק מודיעים עליה בקול

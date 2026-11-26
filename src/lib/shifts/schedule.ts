@@ -21,7 +21,7 @@ import {
   SHIFT_WEEKDAYS,
 } from "@/lib/shifts/calendar";
 import { requireActiveWindow } from "@/lib/shifts/windows-db";
-import type { ShiftWindowDef } from "@/lib/shifts/windows";
+import { windowPriceFor, type ShiftWindowDef } from "@/lib/shifts/windows";
 import { abortPendingShift, chargeShiftMonth, grantMakeupCredits } from "@/lib/shifts/billing";
 import { writeAudit } from "@/lib/finance/audit";
 
@@ -107,7 +107,9 @@ export async function planOccurrences(
   const track = await trackForUser(userId);
   if (!track) throw new ShiftError("יש להשלים מגדר בפרופיל כדי להזמין משמרת", "INVALID");
 
-  const shiftWindow = await requireActiveWindow(windowId, db, { allowInactive: allowInactiveWindow });
+  const baseWindow = await requireActiveWindow(windowId, db, { allowInactive: allowInactiveWindow });
+  // חדר סדנאות מתומחר במחיר חודשי נפרד; מכאן והלאה monthlyPriceAgorot של המשבצת הוא המחיר החל על החדר שנבחר
+  const shiftWindow: ShiftWindowDef = { ...baseWindow, monthlyPriceAgorot: windowPriceFor(baseWindow, roomKey) };
   const windows = await loadWindows();
   const conflicts: ShiftConflict[] = [];
   const occurrences: PlannedOccurrence[] = occurrenceDatesBetween(from, to, weekday).map((date) => {

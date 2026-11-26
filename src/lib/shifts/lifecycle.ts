@@ -13,6 +13,7 @@ import {
   periodKeyOf,
   SHIFT_WEEKDAYS,
 } from "@/lib/shifts/calendar";
+import { windowPriceFor } from "@/lib/shifts/windows";
 import { requireActiveWindow } from "@/lib/shifts/windows-db";
 import { chargeShiftMonth, grantMakeupCredits, graceDeadline, refundChargeAmount, type ChargeResult } from "@/lib/shifts/billing";
 import { createAppointment } from "@/lib/booking";
@@ -518,11 +519,14 @@ export async function decideShiftRequest(params: {
   }
   // המחיר משתנה רק כשהבקשה כוללת מעבר מפורש למשבצת אחרת (אישור מפורש של המנהל למחיר החדש). שינוי חדר/יום בלבד
   // ממשיך לתמחר לפי המחיר שהמשמרת כבר התחייבה אליו, גם אם מחיר המשבצת (windowId הנוכחי) נערך מאז ההזמנה
+  // מעבר בין חדר רגיל לחדר סדנאות (או להפך) משנה את התמחור, ולכן מתומחר מחדש לפי המשבצת הנוכחית
   const windowChanged = request.proposedWindowId !== null;
-  const effectiveMonthlyPriceAgorot = windowChanged ? windowDef.monthlyPriceAgorot : shift.monthlyPriceAgorot;
+  const roomClassChanged = (newRoomKey === "WORKSHOP") !== (shift.room.key === "WORKSHOP");
+  const repriced = windowChanged || roomClassChanged;
+  const effectiveMonthlyPriceAgorot = repriced ? windowPriceFor(windowDef, newRoomKey) : shift.monthlyPriceAgorot;
 
   const planned = await planOccurrences(
-    { userId: shift.userId, roomKey: newRoomKey, weekday: newWeekday, windowId: newWindow, from, to: shift.endDate, startDate: shift.startDate, allowInactiveWindow: newWindow === shift.windowId, priceOverrideAgorot: windowChanged ? undefined : effectiveMonthlyPriceAgorot },
+    { userId: shift.userId, roomKey: newRoomKey, weekday: newWeekday, windowId: newWindow, from, to: shift.endDate, startDate: shift.startDate, allowInactiveWindow: newWindow === shift.windowId, priceOverrideAgorot: repriced ? undefined : effectiveMonthlyPriceAgorot },
     db
   ).catch((err) => {
     if (err instanceof ShiftError && err.message === "אין מופעים בתקופה שנבחרה") return { occurrences: [], conflicts: [], window: windowDef };

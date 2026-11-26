@@ -17,6 +17,8 @@ import {
 import type { BalanceView, HistoryEntry, PackageView } from "@/lib/payments/views";
 
 export interface PackageOfferView {
+  /** כרטיסיית חדר סדנאות (מחיר נפרד, מנוצלת רק בחדר סדנאות) */
+  workshop: boolean;
   hours: number;
   priceAgorot: number;
   savingsAgorot: number;
@@ -122,7 +124,7 @@ function BalanceTab({ onBuy }: { onBuy: () => void }) {
               <ul className="grid gap-4 sm:grid-cols-2">
                 {view.credits.map((c) => (
                   <li key={c.id} className="card p-5" data-testid="credit">
-                    <p className="font-display text-lg font-bold text-stone-900">זיכוי {durationText(c.minutesRemaining)}</p>
+                    <p className="font-display text-lg font-bold text-stone-900">זיכוי {durationText(c.minutesRemaining)}{c.workshop ? " · חדר סדנאות" : ""}</p>
                     <p className="text-sm text-stone-500 mt-1">
                       התקבל ב-{dateText(c.createdAt)} · בתוקף עד <strong>{dateText(c.expiresAt)}</strong>
                     </p>
@@ -140,7 +142,7 @@ function BalanceTab({ onBuy }: { onBuy: () => void }) {
           <ul className="mt-3 space-y-2 text-sm text-stone-600">
             {view.exhaustedPackages.map((p) => (
               <li key={p.id}>
-                חבילת {p.hours} שעות · נרכשה {dateText(p.purchasedAt)}
+                חבילת {p.hours} שעות{p.workshop ? " (חדר סדנאות)" : ""} · נרכשה {dateText(p.purchasedAt)}
               </li>
             ))}
           </ul>
@@ -154,7 +156,7 @@ function BalanceTab({ onBuy }: { onBuy: () => void }) {
           <ul className="mt-3 space-y-2 text-sm text-stone-600">
             {view.expiredPackages.map((p) => (
               <li key={p.id}>
-                חבילת {p.hours} שעות · פגה ב-{dateText(p.expiresAt)} · נותרו {durationText(p.minutesRemaining)} שלא נוצלו
+                חבילת {p.hours} שעות{p.workshop ? " (חדר סדנאות)" : ""} · פגה ב-{dateText(p.expiresAt)} · נותרו {durationText(p.minutesRemaining)} שלא נוצלו
               </li>
             ))}
             {view.expiredCredits.map((c) => (
@@ -190,7 +192,7 @@ function PackageCard({ pkg, onCancel }: { pkg: PackageView; onCancel: () => void
     <li className="card p-5 space-y-3" data-testid="package">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="font-display text-lg font-bold text-stone-900">חבילת {pkg.hours} שעות</p>
+          <p className="font-display text-lg font-bold text-stone-900">חבילת {pkg.hours} שעות{pkg.workshop ? " · חדר סדנאות" : ""}</p>
           <p className="text-xs text-stone-400 mt-0.5">שולם {shekel(pkg.pricePaidAgorot)}</p>
         </div>
         <p className="font-display text-2xl font-bold text-brand-700 tabular-nums text-left">{durationText(pkg.minutesRemaining)}</p>
@@ -279,7 +281,7 @@ function newClientKey(): string {
 }
 
 function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: boolean; sandbox: boolean; onActivated: () => void; packages: PackageOfferView[] }) {
-  const [confirming, setConfirming] = useState<{ hours: number; priceAgorot: number; key: string } | null>(null);
+  const [confirming, setConfirming] = useState<{ hours: number; workshop: boolean; priceAgorot: number; key: string } | null>(null);
   const [purchase, setPurchase] = useState<Purchase | null>(null);
   const [message, setMessage] = useState<PurchaseMessage | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -347,14 +349,14 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
 
   async function start() {
     if (!confirming) return;
-    const { hours, key } = confirming;
+    const { hours, workshop, key } = confirming;
     await run(async () => {
       setError(null);
       setMessage(null);
       const res = await api<{ paymentId: string; providerPaymentId?: string; hours: number; amountAgorot: number }>(
         "/api/payments/packages/purchase",
         // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת
-        { body: { hours, clientKey: key } }
+        { body: { hours, workshop, clientKey: key } }
       );
       if (!res.ok) {
         setError(res.data.error ?? "לא ניתן להתחיל את הרכישה");
@@ -408,33 +410,45 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
         </section>
       )}
 
-      <section>
-        <SectionTitle hint="כל חבילה תקפה שנה מיום הרכישה, לכל החדרים, וניצולה לפי דקות">חבילות שעות</SectionTitle>
-        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {packages.map((p) => (
-            <li key={p.hours} className="card card-hover p-5 flex flex-col gap-3" data-testid="package-offer">
-              <p className="font-display text-3xl font-bold text-stone-900">{p.hours} שעות</p>
-              <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{shekel(p.priceAgorot)}</p>
-              <ul className="text-sm text-stone-500 space-y-1">
-                <li>{shekel(Math.round(p.priceAgorot / p.hours))} לשעה</li>
-                <li>חיסכון של {shekel(p.savingsAgorot)} לעומת מחיר רגיל</li>
-                <li>תוקף: שנה מיום הרכישה</li>
-              </ul>
-              <button
-                type="button"
-                className="btn btn-primary mt-auto"
-                disabled={!canPurchase || busy || !!purchase}
-                onClick={() => {
-                  setError(null);
-                  setConfirming({ hours: p.hours, priceAgorot: p.priceAgorot, key: newClientKey() });
-                }}
-              >
-                רכישה
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {[false, true].map((workshop) => (
+        <section key={workshop ? "workshop" : "regular"}>
+          <SectionTitle
+            hint={
+              workshop
+                ? "כרטיסיית חדר סדנאות תקפה שנה מיום הרכישה, ומנוצלת רק להזמנות בחדר סדנאות (חבילה רגילה אינה מנוצלת בו)"
+                : "כל חבילה תקפה שנה מיום הרכישה, לכל החדרים מלבד חדר סדנאות, וניצולה לפי דקות"
+            }
+          >
+            {workshop ? "חבילות שעות לחדר סדנאות" : "חבילות שעות"}
+          </SectionTitle>
+          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {packages
+              .filter((p) => p.workshop === workshop)
+              .map((p) => (
+                <li key={p.hours} className="card card-hover p-5 flex flex-col gap-3" data-testid={workshop ? "workshop-package-offer" : "package-offer"}>
+                  <p className="font-display text-3xl font-bold text-stone-900">{p.hours} שעות</p>
+                  <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{shekel(p.priceAgorot)}</p>
+                  <ul className="text-sm text-stone-500 space-y-1">
+                    <li>{shekel(Math.round(p.priceAgorot / p.hours))} לשעה</li>
+                    <li>חיסכון של {shekel(p.savingsAgorot)} לעומת מחיר רגיל</li>
+                    <li>תוקף: שנה מיום הרכישה</li>
+                  </ul>
+                  <button
+                    type="button"
+                    className="btn btn-primary mt-auto"
+                    disabled={!canPurchase || busy || !!purchase}
+                    onClick={() => {
+                      setError(null);
+                      setConfirming({ hours: p.hours, workshop: p.workshop, priceAgorot: p.priceAgorot, key: newClientKey() });
+                    }}
+                  >
+                    רכישה
+                  </button>
+                </li>
+              ))}
+          </ul>
+        </section>
+      ))}
 
       {confirming && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-stone-900/40 p-4" role="presentation">

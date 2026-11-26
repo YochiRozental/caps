@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { BrandHeader, Icon, SectionTitle } from "@/components/ui";
 import { TRIAL_DISCOUNT_PERCENT, formatAgorot, regularPriceAgorot } from "@/lib/payments/pricing";
-import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
+import { getRegularPricing, hoursPackageOptions, workshopHoursPackageOptions } from "@/lib/payments/pricing-db";
 import { listShiftWindows } from "@/lib/shifts/windows-db";
 import { hhmm } from "@/lib/shifts/windows";
 
@@ -13,7 +13,9 @@ export default async function PricingPage() {
   const [shiftWindowsAll, pricing] = await Promise.all([listShiftWindows({ activeOnly: true }), getRegularPricing()]);
   const shiftWindows = shiftWindowsAll.filter((w) => w.active);
   const packages = hoursPackageOptions(pricing);
+  const workshopPackages = workshopHoursPackageOptions(pricing);
   const singleHourAgorot = regularPriceAgorot(60, pricing.hourlyAgorot);
+  const workshopSingleHourAgorot = regularPriceAgorot(60, pricing.workshopHourlyAgorot);
   const trialAgorot = Math.round((singleHourAgorot * (100 - TRIAL_DISCOUNT_PERCENT)) / 100);
 
   return (
@@ -41,6 +43,7 @@ export default async function PricingPage() {
                 <tr>
                   <th>שעות המשמרת</th>
                   <th>מחיר לחודש</th>
+                  <th>חדר סדנאות (לחודש)</th>
                 </tr>
               </thead>
               <tbody>
@@ -51,6 +54,9 @@ export default async function PricingPage() {
                     </td>
                     <td className="tabular-nums">
                       <strong>{w.monthlyPriceAgorot / 100} ₪</strong>
+                    </td>
+                    <td className="tabular-nums">
+                      <strong>{w.workshopMonthlyPriceAgorot / 100} ₪</strong>
                     </td>
                   </tr>
                 ))}
@@ -73,6 +79,16 @@ export default async function PricingPage() {
             </div>
           ))}
         </div>
+        <h3 className="font-display text-lg font-bold text-stone-900 mt-6 mb-3">כרטיסיות לחדר סדנאות</h3>
+        <p className="text-sm text-stone-500 mb-3">כרטיסיית חדר סדנאות מנוצלת רק להזמנות בחדר סדנאות, וכרטיסייה רגילה אינה מנוצלת בו.</p>
+        <div className="grid sm:grid-cols-3 gap-4" data-testid="workshop-packages">
+          {workshopPackages.map((p) => (
+            <div key={p.hours} className="card card-hover p-6 text-center">
+              <p className="font-display text-lg font-bold text-stone-900">{p.hours} שעות</p>
+              <p className="font-display text-3xl font-bold text-brand-700 mt-2 tabular-nums">{p.priceAgorot / 100} ₪</p>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* הזמנה בודדת */}
@@ -80,9 +96,15 @@ export default async function PricingPage() {
         <SectionTitle index="3" hint="הזמנת שעה בודדת, ללא רכישת כרטיסייה או משמרת">
           הזמנה בודדת
         </SectionTitle>
-        <div className="card p-6 flex items-center justify-between gap-4 max-w-md">
-          <p className="font-display text-lg font-bold text-stone-900">שעה אחת</p>
-          <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{singleHourAgorot / 100} ₪</p>
+        <div className="grid sm:grid-cols-2 gap-4 max-w-2xl">
+          <div className="card p-6 flex items-center justify-between gap-4">
+            <p className="font-display text-lg font-bold text-stone-900">שעה אחת</p>
+            <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{singleHourAgorot / 100} ₪</p>
+          </div>
+          <div className="card p-6 flex items-center justify-between gap-4" data-testid="workshop-hour">
+            <p className="font-display text-lg font-bold text-stone-900">שעה אחת בחדר סדנאות</p>
+            <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{workshopSingleHourAgorot / 100} ₪</p>
+          </div>
         </div>
       </section>
 

@@ -24,7 +24,8 @@ function parseWindows(value: unknown): WindowInput[] | null {
     if (typeof w.name !== "string" || typeof w.active !== "boolean") return null;
     if (typeof w.startMinutes !== "number" || typeof w.endMinutes !== "number" || typeof w.monthlyPriceShekel !== "number") return null;
     if (w.id !== undefined && typeof w.id !== "string") return null;
-    out.push({ id: w.id as string | undefined, name: w.name, startMinutes: w.startMinutes, endMinutes: w.endMinutes, monthlyPriceShekel: w.monthlyPriceShekel, active: w.active });
+    if (w.workshopMonthlyPriceShekel !== undefined && typeof w.workshopMonthlyPriceShekel !== "number") return null;
+    out.push({ id: w.id as string | undefined, name: w.name, startMinutes: w.startMinutes, endMinutes: w.endMinutes, monthlyPriceShekel: w.monthlyPriceShekel, workshopMonthlyPriceShekel: w.workshopMonthlyPriceShekel as number | undefined, active: w.active });
   }
   return out;
 }

@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { quoteHold } from "@/lib/payments/booking-payment";
 import { loadUsableBalances } from "@/lib/payments/balances";
-import { regularPriceAgorot } from "@/lib/payments/pricing";
-import { getRegularPricing } from "@/lib/payments/pricing-db";
+import { isWorkshopRoom, regularPriceAgorot } from "@/lib/payments/pricing";
+import { getRegularPricing, hourlyAgorotFor } from "@/lib/payments/pricing-db";
 import { PaymentFlowError } from "@/lib/payments/shared";
 
 /**
@@ -25,6 +25,8 @@ export interface PackageView {
   minutesTotal: number;
   minutesRemaining: number;
   pricePaidAgorot: number;
+  /** כרטיסיית חדר סדנאות (מנוצלת רק בחדר סדנאות) */
+  workshop: boolean;
   purchasedAt: string;
   expiresAt: string;
   /** הבקשה האחרונה לביטול החבילה, אם קיימת */
@@ -33,6 +35,8 @@ export interface PackageView {
 
 export interface CreditView {
   id: string;
+  /** זיכוי חדר סדנאות (מנוצל רק בחדר סדנאות) */
+  workshop: boolean;
   minutesTotal: number;
   minutesRemaining: number;
   createdAt: string;
@@ -71,6 +75,7 @@ export async function getBalanceView(userId: string, now: Date = new Date()): Pr
       minutesTotal: p.minutesTotal,
       minutesRemaining: p.minutesRemaining,
       pricePaidAgorot: p.pricePaidAgorot,
+      workshop: p.workshop,
       purchasedAt: p.purchasedAt.toISOString(),
       expiresAt: p.expiresAt.toISOString(),
       cancellationRequest: req
@@ -80,6 +85,7 @@ export async function getBalanceView(userId: string, now: Date = new Date()): Pr
   };
   const toCredit = (c: (typeof credits)[number]): CreditView => ({
     id: c.id,
+    workshop: c.workshop,
     minutesTotal: c.minutesTotal,
     minutesRemaining: c.minutesRemaining,
     createdAt: c.createdAt.toISOString(),
@@ -148,13 +154,13 @@ export async function getHoldDetails(appointmentId: string, userId: string, now:
 
   let fullPriceAgorot = 0;
   try {
-    fullPriceAgorot = regularPriceAgorot(durationMinutes, (await getRegularPricing()).hourlyAgorot);
+    fullPriceAgorot = regularPriceAgorot(durationMinutes, hourlyAgorotFor(await getRegularPricing(), appt.room.key));
   } catch {
     // משך שאינו ניתן לתמחור: נשאר 0 והתשלום יידחה בשרת
   }
 
   const [sources, payment] = await Promise.all([
-    loadUsableBalances(prisma, userId, now),
+    loadUsableBalances(prisma, userId, now, isWorkshopRoom(appt.room.key)),
     prisma.payment.findFirst({
       where: { appointmentId, purpose: "BOOKING" },
       orderBy: { createdAt: "desc" },

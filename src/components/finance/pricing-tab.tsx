@@ -11,6 +11,10 @@ interface PricingDto {
   package5Agorot: number;
   package10Agorot: number;
   package20Agorot: number;
+  workshopHourlyAgorot: number;
+  workshopPackage5Agorot: number;
+  workshopPackage10Agorot: number;
+  workshopPackage20Agorot: number;
   updatedAt: string;
   updatedByName: string | null;
 }
@@ -23,8 +27,18 @@ function toAgorot(value: string): number | null {
   return Math.round(Number(value) * 100);
 }
 
+type PriceKey =
+  | "hourlyAgorot"
+  | "package5Agorot"
+  | "package10Agorot"
+  | "package20Agorot"
+  | "workshopHourlyAgorot"
+  | "workshopPackage5Agorot"
+  | "workshopPackage10Agorot"
+  | "workshopPackage20Agorot";
+
 interface Row {
-  key: "hourlyAgorot" | "package5Agorot" | "package10Agorot" | "package20Agorot";
+  key: PriceKey;
   label: string;
   hint: string;
 }
@@ -36,6 +50,19 @@ const ROWS: Row[] = [
   { key: "package20Agorot", label: "כרטיסיית 20 שעות", hint: "תוקף שנה מיום הרכישה" },
 ];
 
+/** חדר סדנאות: מחירים נפרדים (ברירת מחדל כפול מהחדרים הרגילים). כרטיסיית סדנאות מנוצלת רק בחדר סדנאות */
+const WORKSHOP_ROWS: Row[] = [
+  { key: "workshopHourlyAgorot", label: "חדר סדנאות: מחיר שעה בודדת", hint: "הזמנה חד-פעמית בחדר סדנאות" },
+  { key: "workshopPackage5Agorot", label: "חדר סדנאות: כרטיסיית 5 שעות", hint: "מנוצלת רק בחדר סדנאות" },
+  { key: "workshopPackage10Agorot", label: "חדר סדנאות: כרטיסיית 10 שעות", hint: "מנוצלת רק בחדר סדנאות" },
+  { key: "workshopPackage20Agorot", label: "חדר סדנאות: כרטיסיית 20 שעות", hint: "מנוצלת רק בחדר סדנאות" },
+];
+
+const ALL_ROWS: Row[] = [...ROWS, ...WORKSHOP_ROWS];
+
+const toFields = (p: PricingDto): Record<PriceKey, string> =>
+  Object.fromEntries(ALL_ROWS.map((r) => [r.key, String(p[r.key] / 100)])) as Record<PriceKey, string>;
+
 /**
  * עריכת מחיר שעה בודדת וכרטיסיות השעות (5/10/20). שמירה מעדכנת את מקור האמת במסד ומשפיעה מיידית על
  * המחירון הציבורי, רכישות חדשות והזמנות חדשות. תשלומים וחבילות שכבר נרכשו שומרים את המחיר שנקבע להם בזמן
@@ -43,7 +70,7 @@ const ROWS: Row[] = [
  */
 export function PricingTab({ onChanged, tell }: { onChanged: () => void; tell: (tone: "success" | "error", text: string) => void }) {
   const [pricing, setPricing] = useState<PricingDto | null>(null);
-  const [fields, setFields] = useState<Record<Row["key"], string> | null>(null);
+  const [fields, setFields] = useState<Record<PriceKey, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { busy, run } = useSingleFlight();
 
@@ -52,12 +79,7 @@ export function PricingTab({ onChanged, tell }: { onChanged: () => void; tell: (
     if (res.ok) {
       const p = (res.data as { pricing: PricingDto }).pricing;
       setPricing(p);
-      setFields({
-        hourlyAgorot: String(p.hourlyAgorot / 100),
-        package5Agorot: String(p.package5Agorot / 100),
-        package10Agorot: String(p.package10Agorot / 100),
-        package20Agorot: String(p.package20Agorot / 100),
-      });
+      setFields(toFields(p));
     } else setError(res.data.error ?? "שגיאה בטעינת התמחור");
   }, []);
 
@@ -69,8 +91,8 @@ export function PricingTab({ onChanged, tell }: { onChanged: () => void; tell: (
   if (error) return <Alert tone="error">{error}</Alert>;
   if (!pricing || !fields) return <Loading />;
 
-  const parsed = Object.fromEntries(ROWS.map((r) => [r.key, fields[r.key] === "" ? null : toAgorot(fields[r.key])])) as Record<Row["key"], number | null>;
-  const problem = ROWS.find((r) => parsed[r.key] === null || (parsed[r.key] as number) <= 0) ? "כל המחירים חייבים להיות מספר חיובי, בשקלים (עד שתי ספרות אחרי הנקודה)" : null;
+  const parsed = Object.fromEntries(ALL_ROWS.map((r) => [r.key, fields[r.key] === "" ? null : toAgorot(fields[r.key])])) as Record<PriceKey, number | null>;
+  const problem = ALL_ROWS.find((r) => parsed[r.key] === null || (parsed[r.key] as number) <= 0) ? "כל המחירים חייבים להיות מספר חיובי, בשקלים (עד שתי ספרות אחרי הנקודה)" : null;
 
   async function save() {
     await run(async () => {
@@ -78,12 +100,7 @@ export function PricingTab({ onChanged, tell }: { onChanged: () => void; tell: (
       if (res.ok) {
         const p = (res.data as { pricing: PricingDto }).pricing;
         setPricing(p);
-        setFields({
-          hourlyAgorot: String(p.hourlyAgorot / 100),
-          package5Agorot: String(p.package5Agorot / 100),
-          package10Agorot: String(p.package10Agorot / 100),
-          package20Agorot: String(p.package20Agorot / 100),
-        });
+        setFields(toFields(p));
         tell("success", "המחירים נשמרו. השינוי חל מיידית על המחירון הציבורי ועל רכישות והזמנות חדשות.");
         onChanged();
       } else {
@@ -109,7 +126,7 @@ export function PricingTab({ onChanged, tell }: { onChanged: () => void; tell: (
               </tr>
             </thead>
             <tbody>
-              {ROWS.map((r) => (
+              {ALL_ROWS.map((r) => (
                 <tr key={r.key}>
                   <td>
                     {r.label}

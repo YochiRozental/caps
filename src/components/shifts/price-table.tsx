@@ -15,6 +15,7 @@ export function ShiftPriceTable({ windows }: { windows: ShiftWindowDef[] }) {
               <th>תדירות</th>
               <th>מחיר לחודש</th>
               <th>סה&quot;כ לשלושה חודשים</th>
+              <th>חדר סדנאות (לחודש)</th>
               <th>תקופה</th>
             </tr>
           </thead>
@@ -35,6 +36,11 @@ export function ShiftPriceTable({ windows }: { windows: ShiftWindowDef[] }) {
                   <strong>{w.monthlyPriceAgorot / 100} ₪</strong>
                 </td>
                 <td className="tabular-nums">{(w.monthlyPriceAgorot * 3) / 100} ₪</td>
+                <td className="tabular-nums">
+                  <strong>{w.workshopMonthlyPriceAgorot / 100} ₪</strong>
+                  <br />
+                  <span className="text-xs text-stone-500">{(w.workshopMonthlyPriceAgorot * 3) / 100} ₪ לשלושה חודשים</span>
+                </td>
                 <td>3 חודשים מלאים</td>
               </tr>
             ))}

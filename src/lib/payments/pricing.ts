@@ -23,6 +23,11 @@ export function assertQuarterHours(minutes: number) {
   }
 }
 
+/** חדר סדנאות מתומחר בנפרד (שעה וכרטיסיות), וכרטיסיית/זיכוי סדנאות מנוצלים רק בו */
+export function isWorkshopRoom(roomKey: string): boolean {
+  return roomKey === "WORKSHOP";
+}
+
 /** מחיר רגיל להזמנה לפי משך בדקות ומחיר שעה (באגורות) נוכחי. מעוגל לאגורה הקרובה */
 export function regularPriceAgorot(minutes: number, hourlyAgorot: number): number {
   assertQuarterHours(minutes);

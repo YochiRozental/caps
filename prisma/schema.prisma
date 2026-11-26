@@ -222,6 +222,8 @@ model Payment {
   appointment       Appointment?       @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
   /// רכישת חבילה (purpose = PACKAGE): כמה שעות נרכשות. המחיר נקבע בשרת מטבלת המחירים
   packageHours      Int?
+  /// רכישת חבילה (purpose = PACKAGE): האם זו כרטיסיית חדר סדנאות
+  packageWorkshop   Boolean            @default(false)
   /// תשלום הזמנה (purpose = BOOKING): כמה דקות מתוכננות לניכוי מיתרה בעת האישור. הסכום בכסף הוא ההפרש בלבד
   packageMinutes    Int                @default(0)
   /// תשלום הזמנה (purpose = BOOKING): כמה מתוך amountAgorot הוא הנחת 25% להזמנה ראשונה שכבר נכלל בסכום (0 = אין הנחה)
@@ -313,6 +315,8 @@ model HoursPackage {
   user             User           @relation(fields: [userId], references: [id], onDelete: Restrict)
   hours            Int
   pricePaidAgorot  Int
+  /// כרטיסיית חדר סדנאות: מנוצלת רק להזמנות בחדר סדנאות, וכרטיסייה רגילה (false) אינה מנוצלת בו
+  workshop         Boolean        @default(false)
   minutesTotal     Int
   minutesRemaining Int
   purchasedAt      DateTime       @default(now())
@@ -382,6 +386,8 @@ model Credit {
   user                User     @relation(fields: [userId], references: [id], onDelete: Restrict)
   minutesTotal        Int
   minutesRemaining    Int
+  /// זיכוי שמקורו בחדר סדנאות: מנוצל רק בחדר סדנאות (ראו HoursPackage.workshop)
+  workshop            Boolean  @default(false)
   expiresAt           DateTime
   reason              String?
   sourceAppointmentId String?
@@ -617,6 +623,8 @@ model ShiftWindow {
   endMinutes         Int
   /// מחיר חודשי כולל מע"מ, באגורות. שקלים שלמים בלבד (מתחלק במדויק ב-4 וב-5 מופעים בחודש)
   monthlyPriceAgorot Int
+  /// מחיר חודשי למשמרת בחדר סדנאות (ברירת מחדל: כפול מהמחיר הרגיל), באגורות. שקלים שלמים בלבד
+  workshopMonthlyPriceAgorot Int
   active             Boolean  @default(true)
   sortOrder          Int      @default(0)
   createdAt          DateTime @default(now())
@@ -633,6 +641,11 @@ model RegularPricing {
   package5Agorot  Int
   package10Agorot Int
   package20Agorot Int
+  /// תמחור חדר סדנאות (ברירת מחדל: כפול מהחדרים הרגילים, ניתן לעריכה ע"י מנהל): שעה בודדת וכרטיסיות 5/10/20
+  workshopHourlyAgorot    Int
+  workshopPackage5Agorot  Int
+  workshopPackage10Agorot Int
+  workshopPackage20Agorot Int
   updatedAt       DateTime @updatedAt
   updatedById     String?
 }

@@ -24,11 +24,14 @@ export const toPackageBalance = (s: BalanceSource): PackageBalance => ({
   minutesRemaining: s.minutesRemaining,
 });
 
-/** מקורות שניתן לנצל כעת: לא פגו ויש בהם יתרה. שאילתת קריאה בלבד; לשינוי יש לנעול קודם */
-export async function loadUsableBalances(db: Tx | typeof prisma, userId: string, now: Date): Promise<BalanceSource[]> {
+/**
+ * מקורות שניתן לנצל כעת: לא פגו ויש בהם יתרה. שאילתת קריאה בלבד; לשינוי יש לנעול קודם.
+ * workshop: יתרות חדר סדנאות (true) או יתרות רגילות (false) בלבד: אין חציית יתרות בין שני הסוגים
+ */
+export async function loadUsableBalances(db: Tx | typeof prisma, userId: string, now: Date, workshop = false): Promise<BalanceSource[]> {
   const [packages, credits] = await Promise.all([
-    db.hoursPackage.findMany({ where: { userId, expiresAt: { gt: now }, minutesRemaining: { gt: 0 }, cancelledAt: null } }),
-    db.credit.findMany({ where: { userId, expiresAt: { gt: now }, minutesRemaining: { gt: 0 } } }),
+    db.hoursPackage.findMany({ where: { userId, workshop, expiresAt: { gt: now }, minutesRemaining: { gt: 0 }, cancelledAt: null } }),
+    db.credit.findMany({ where: { userId, workshop, expiresAt: { gt: now }, minutesRemaining: { gt: 0 } } }),
   ]);
   return [
     ...packages.map((p) => ({ kind: "package" as const, id: p.id, expiresAt: p.expiresAt, minutesRemaining: p.minutesRemaining })),
@@ -44,10 +47,10 @@ export type ConsumeResult = { ok: true; consumedMinutes: number } | { ok: false;
  */
 export async function consumeBalance(
   tx: Tx,
-  params: { userId: string; appointmentId: string; minutes: number; now: Date }
+  params: { userId: string; appointmentId: string; minutes: number; now: Date; workshop?: boolean }
 ): Promise<ConsumeResult> {
-  const { userId, appointmentId, minutes, now } = params;
-  const sources = await loadUsableBalances(tx, userId, now);
+  const { userId, appointmentId, minutes, now, workshop = false } = params;
+  const sources = await loadUsableBalances(tx, userId, now, workshop);
   const { allocations, shortfallMinutes } = allocatePackageMinutes(sources.map(toPackageBalance), minutes, now);
   if (shortfallMinutes > 0) return { ok: false, shortfallMinutes };
 
@@ -106,7 +109,7 @@ export async function restoreAppointmentBalance(
     return map;
   };
 
-  type Pending = { kind: "package" | "credit"; id: string; minutes: number; expired: boolean; forfeited?: boolean };
+  type Pending = { kind: "package" | "credit"; id: string; minutes: number; expired: boolean; forfeited?: boolean; workshop: boolean };
   const pending: Pending[] = [];
 
   for (const [packageId, rows] of group(pkgRows, (r) => r.packageId)) {
@@ -115,7 +118,7 @@ export async function restoreAppointmentBalance(
     const source = await tx.hoursPackage.findFirst({ where: { id: packageId, userId } });
     if (!source) continue;
     // חבילה שבוטלה ע"י מנהל נחשבת כפגה: דקות שיוחזרו אליה הופכות לזיכוי, ולא פותחות מחדש יתרה שהוחזרה/אופסה
-    pending.push({ kind: "package", id: packageId, minutes, expired: source.expiresAt.getTime() <= now.getTime() || source.cancelledAt !== null });
+    pending.push({ kind: "package", id: packageId, minutes, expired: source.expiresAt.getTime() <= now.getTime() || source.cancelledAt !== null, workshop: source.workshop });
   }
   for (const [creditId, rows] of group(creditRows, (r) => r.creditId)) {
     const minutes = net(rows);
@@ -125,7 +128,7 @@ export async function restoreAppointmentBalance(
     // שעה חלופית של משמרת שמנהל ויתר עליה במפורש: הזכאות בוטלה. דקות שנוצלו קודם (גם בניצול חלקי) לא חוזרות לשימוש
     // בביטול הזמנה, וגם לא הופכות לזיכוי חדש. רושמים החזרה אפסית כדי שהחישוב נטו יישאר אידמפוטנטי
     const forfeited = source.reason?.startsWith("shift_makeup:") ? (await tx.shiftOccurrence.count({ where: { makeupCreditId: creditId, makeupStatus: "WAIVED" } })) > 0 : false;
-    pending.push({ kind: "credit", id: creditId, minutes, expired: source.expiresAt.getTime() <= now.getTime(), forfeited });
+    pending.push({ kind: "credit", id: creditId, minutes, expired: source.expiresAt.getTime() <= now.getTime(), forfeited, workshop: source.workshop });
   }
 
   const expiredTotal = pending.filter((p) => p.expired && !p.forfeited).reduce((n, p) => n + p.minutes, 0);
@@ -136,6 +139,8 @@ export async function restoreAppointmentBalance(
         userId,
         minutesTotal: expiredTotal,
         minutesRemaining: expiredTotal,
+        // הזמנה אחת מנצלת יתרות מסוג אחד בלבד, ולכן הזיכוי שנוצר שייך לאותו סוג
+        workshop: pending.some((p) => p.workshop),
         expiresAt: creditExpiry(now),
         reason: "restored_from_expired_balance",
         sourceAppointmentId: appointmentId,

@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/ui";
 import { HoursCenter } from "@/components/payments/hours-center";
 import { getFlowProvider } from "@/lib/payments/flow";
 import { packageSavingsAgorot } from "@/lib/payments/pricing";
-import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
+import { getRegularPricing, hourlyAgorotFor, packageOptionsFor } from "@/lib/payments/pricing-db";
 
 /**
  * יתרת שעות, רכישת חבילות והיסטוריית תשלומים. חלק מ"הכרטיס שלי". קיים רק כשזרימת התשלום פעילה (סביבת פיתוח);
@@ -25,7 +25,13 @@ export default async function HoursPage() {
   if (!user) redirect("/login");
 
   const pricing = await getRegularPricing();
-  const packages = hoursPackageOptions(pricing).map((p) => ({ ...p, savingsAgorot: packageSavingsAgorot(p, pricing.hourlyAgorot) }));
+  const packages = [false, true].flatMap((workshop) =>
+    packageOptionsFor(pricing, workshop).map((p) => ({
+      ...p,
+      workshop,
+      savingsAgorot: packageSavingsAgorot(p, hourlyAgorotFor(pricing, workshop ? "WORKSHOP" : "ROOM1")),
+    }))
+  );
 
   return (
     <div className="max-w-4xl mx-auto">

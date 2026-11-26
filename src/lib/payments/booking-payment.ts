@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { BookingError, blockingAppointmentWhere, createBookingHold, lockRoomZone } from "@/lib/booking";
 import { CONFLICTING_ROOM_KEYS } from "@/lib/rooms";
-import { regularPriceAgorot, splitBookingPrice, trialDiscountAgorot } from "@/lib/payments/pricing";
-import { getRegularPricing } from "@/lib/payments/pricing-db";
+import { isWorkshopRoom, regularPriceAgorot, splitBookingPrice, trialDiscountAgorot } from "@/lib/payments/pricing";
+import { getRegularPricing, hourlyAgorotFor } from "@/lib/payments/pricing-db";
 import { isAutoRefundEligible } from "@/lib/payments/policy";
 import type { PaymentProvider } from "@/lib/payments/provider";
 import type { BookingSource, Payment, RoomKey } from "@/generated/prisma/client";
@@ -96,6 +96,8 @@ export interface BookingPlan {
   durationMinutes: number;
   /** דקות שיינוכו מיתרות (חבילות וזיכויים) באישור */
   packageMinutes: number;
+  /** מחיר ההזמנה המלא לפי מחיר החדר (חדר סדנאות במחיר נפרד), לפני יתרה והנחה, באגורות */
+  fullPriceAgorot: number;
   /** מה שנשאר לתשלום בכסף בפועל (אחרי הנחה, אם חלה), באגורות */
   cashAgorot: number;
   /** אותו חלק בכסף לפני הנחה, באגורות (= cashAgorot + discountAgorot) */
@@ -127,23 +129,26 @@ async function previewTrialDiscount(userId: string, appointmentId: string, baseC
 }
 
 async function planFor(
-  appt: { id: string; startTime: Date; endTime: Date },
+  appt: { id: string; startTime: Date; endTime: Date; room: { key: string } },
   userId: string,
   now: Date,
   useBalance: boolean
 ): Promise<BookingPlan> {
   const durationMinutes = durationOf(appt);
   const pricing = await getRegularPricing();
-  const fullPrice = priceFor(appt, pricing.hourlyAgorot); // מוודא שהמשך ניתן לתמחור
+  const hourlyAgorot = hourlyAgorotFor(pricing, appt.room.key);
+  const fullPrice = priceFor(appt, hourlyAgorot); // מוודא שהמשך ניתן לתמחור
   if (!useBalance) {
     const discount = await previewTrialDiscount(userId, appt.id, fullPrice, 0);
-    return { durationMinutes, packageMinutes: 0, baseCashAgorot: fullPrice, discountAgorot: discount, cashAgorot: fullPrice - discount, fullyCoveredByBalance: false };
+    return { durationMinutes, fullPriceAgorot: fullPrice, packageMinutes: 0, baseCashAgorot: fullPrice, discountAgorot: discount, cashAgorot: fullPrice - discount, fullyCoveredByBalance: false };
   }
-  const sources = await loadUsableBalances(prisma, userId, now);
-  const split = splitBookingPrice(durationMinutes, sources.map(toPackageBalance), now, pricing.hourlyAgorot);
+  // יתרות חדר סדנאות מנוצלות רק בחדר סדנאות, ויתרות רגילות רק בחדרים הרגילים
+  const sources = await loadUsableBalances(prisma, userId, now, isWorkshopRoom(appt.room.key));
+  const split = splitBookingPrice(durationMinutes, sources.map(toPackageBalance), now, hourlyAgorot);
   const discount = await previewTrialDiscount(userId, appt.id, split.regularPriceAgorot, split.packageMinutes);
   return {
     durationMinutes,
+    fullPriceAgorot: fullPrice,
     packageMinutes: split.packageMinutes,
     baseCashAgorot: split.regularPriceAgorot,
     discountAgorot: discount,
@@ -155,7 +160,7 @@ async function planFor(
 /** הצעת מחיר להחזקה: כמה יינוכה מהיתרה וכמה ישולם בכסף. קריאה בלבד, אינה שומרת ואינה מנכה כלום */
 export async function quoteHold(params: { appointmentId: string; userId: string; useBalance?: boolean; now?: Date }) {
   const { appointmentId, userId, useBalance = true, now = new Date() } = params;
-  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
+  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId }, include: { room: true } });
   if (!appt || appt.userId !== userId) throw new PaymentFlowError("ההזמנה לא נמצאה", "NOT_FOUND");
   assertActiveHold(appt, now);
   return { ...(await planFor(appt, userId, now, useBalance)), holdExpiresAt: appt.holdExpiresAt! };
@@ -189,7 +194,7 @@ export async function startBookingPayment(params: {
 }): Promise<StartedPayment> {
   const { appointmentId, userId, provider, now = new Date(), useBalance = true } = params;
 
-  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
+  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId }, include: { room: true } });
   // מסתירים קיום הזמנה של אחרים
   if (!appt || appt.userId !== userId) throw new PaymentFlowError("ההזמנה לא נמצאה", "NOT_FOUND");
   assertActiveHold(appt, now);
@@ -379,7 +384,7 @@ export async function confirmBookingFromBalance(params: {
   const appt = await prisma.appointment.findUnique({ where: { id: appointmentId }, include: { room: true } });
   if (!appt || appt.userId !== userId) throw new PaymentFlowError("ההזמנה לא נמצאה", "NOT_FOUND");
   const minutes = durationOf(appt);
-  priceFor(appt, (await getRegularPricing()).hourlyAgorot); // מוודא שהמשך ניתן לתמחור
+  priceFor(appt, hourlyAgorotFor(await getRegularPricing(), appt.room.key)); // מוודא שהמשך ניתן לתמחור
 
   if (appt.status === "CONFIRMED" && appt.paidFromBalanceMinutes === minutes && appt.paidCashAgorot === 0) {
     return { outcome: "ALREADY_CONFIRMED", appointmentId, minutes };
@@ -408,7 +413,7 @@ export async function confirmBookingFromBalance(params: {
     }
 
     await lockUserBalances(tx, userId);
-    const consumed = await consumeBalance(tx, { userId, appointmentId: appt.id, minutes, now });
+    const consumed = await consumeBalance(tx, { userId, appointmentId: appt.id, minutes, now, workshop: isWorkshopRoom(appt.room.key) });
     if (!consumed.ok) throw new PaymentFlowError("אין מספיק יתרה בחבילות להזמנה זו", "INSUFFICIENT_BALANCE");
 
     await tx.appointment.update({
@@ -531,6 +536,7 @@ export async function finalizeBookingPayment(params: {
           appointmentId: appt.id,
           minutes: pay.packageMinutes,
           now,
+          workshop: isWorkshopRoom(payment.appointment!.room.key),
         });
         if (!consumed.ok) {
           // היתרה השתנתה בזמן התשלום (נוצלה/פגה). לא מנכים כלום ולא מאשרים; הכסף יוחזר
@@ -960,7 +966,7 @@ export async function createAdminBookingWithDebt(params: {
   if (!customer) throw new PaymentFlowError("הלקוח לא נמצא", "NOT_FOUND");
 
   const hold = await createBookingHold({ userId, roomKey, startTime, endTime, notes, source: "ADMIN", now });
-  const amountAgorot = priceFor(hold, (await getRegularPricing()).hourlyAgorot);
+  const amountAgorot = priceFor(hold, hourlyAgorotFor(await getRegularPricing(), roomKey));
 
   try {
     return await prisma.$transaction(async (tx) => {
@@ -1012,7 +1018,7 @@ export async function payBookingWithSavedCard(params: {
 }): Promise<FinalizeResult> {
   const { appointmentId, userId, provider, expected, now = new Date(), hooks } = params;
 
-  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
+  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId }, include: { room: true } });
   if (!appt || appt.userId !== userId) throw new PaymentFlowError("ההזמנה לא נמצאה", "NOT_FOUND");
   assertActiveHold(appt, now);
 

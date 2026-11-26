@@ -15,11 +15,12 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => null);
   const hours = Number(body?.hours);
+  const workshop = body?.workshop === true;
   const clientKey = typeof body?.clientKey === "string" ? body.clientKey : "";
   if (!Number.isInteger(hours)) return NextResponse.json({ error: "חבילה לא תקינה" }, { status: 400 });
 
   try {
-    const started = await startPackagePurchase({ userId: session.user.id, hours, clientKey, provider });
+    const started = await startPackagePurchase({ userId: session.user.id, hours, workshop, clientKey, provider });
     return NextResponse.json(started);
   } catch (err) {
     return errorResponse(err);

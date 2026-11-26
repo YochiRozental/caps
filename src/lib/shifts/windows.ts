@@ -11,8 +11,15 @@ export interface ShiftWindowDef {
   startMinutes: number;
   endMinutes: number;
   monthlyPriceAgorot: number;
+  /** מחיר חודשי למשמרת בחדר סדנאות (ברירת מחדל כפול מהרגיל, נערך ע"י מנהל) */
+  workshopMonthlyPriceAgorot: number;
   active: boolean;
   sortOrder: number;
+}
+
+/** המחיר החודשי של המשבצת לפי החדר: חדר סדנאות במחיר נפרד */
+export function windowPriceFor(w: Pick<ShiftWindowDef, "monthlyPriceAgorot" | "workshopMonthlyPriceAgorot">, roomKey: string): number {
+  return roomKey === "WORKSHOP" ? w.workshopMonthlyPriceAgorot : w.monthlyPriceAgorot;
 }
 
 export const SHIFT_WINDOW_STEP_MINUTES = 15;
@@ -33,6 +40,8 @@ export interface WindowInput {
   endMinutes: number;
   /** בשקלים שלמים */
   monthlyPriceShekel: number;
+  /** בשקלים שלמים: מחיר חדר סדנאות. חסר = משבצת חדשה מקבלת כפול מהמחיר הרגיל, ומשבצת קיימת שומרת את מחירה */
+  workshopMonthlyPriceShekel?: number;
   active: boolean;
 }
 
@@ -48,6 +57,9 @@ export function validateWindowInputs(list: WindowInput[]): string | null {
     if (w.startMinutes >= w.endMinutes) return `במשבצת "${name}" שעת הסיום חייבת להיות אחרי שעת ההתחלה`;
     if (!Number.isInteger(w.monthlyPriceShekel) || w.monthlyPriceShekel <= 0 || w.monthlyPriceShekel > MAX_MONTHLY_PRICE_SHEKEL) {
       return `מחיר חודשי של "${name}" חייב להיות מספר שלם של שקלים בין 1 ל-${MAX_MONTHLY_PRICE_SHEKEL}`;
+    }
+    if (w.workshopMonthlyPriceShekel !== undefined && (!Number.isInteger(w.workshopMonthlyPriceShekel) || w.workshopMonthlyPriceShekel <= 0 || w.workshopMonthlyPriceShekel > MAX_MONTHLY_PRICE_SHEKEL)) {
+      return `מחיר חודשי של "${name}" בחדר סדנאות חייב להיות מספר שלם של שקלים בין 1 ל-${MAX_MONTHLY_PRICE_SHEKEL}`;
     }
   }
   const active = list.filter((w) => w.active).sort((a, b) => a.startMinutes - b.startMinutes);
