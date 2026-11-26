@@ -19,7 +19,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       // הלקוח רשאי רק לוותר על שימוש ביתרה; כמה לנכות וכמה לגבות נקבע בשרת
       useBalance: body?.useBalance !== false,
     });
-    return NextResponse.json(withoutProviderInternals(started, provider));
+    return NextResponse.json(withoutProviderInternals(started));
   } catch (err) {
     return errorResponse(err);
   }

@@ -43,10 +43,9 @@ describe(
     let shiftSvc: typeof import("@/lib/shifts/schedule");
     let shiftBill: typeof import("@/lib/shifts/billing");
     let shiftLife: typeof import("@/lib/shifts/lifecycle");
-    let methods: typeof import("@/lib/payments/saved-methods");
     let hoursDb: typeof import("@/lib/opening-hours-db");
     let pw: typeof import("@/lib/password");
-    let MockPaymentProvider: typeof import("@/lib/payments/mock-provider").MockPaymentProvider;
+    let MockPaymentProvider: typeof import("@/lib/payments/testing/mock-provider").MockPaymentProvider;
     let PrismaMockStore: typeof import("@/lib/payments/mock-store").PrismaMockStore;
     let PaymentStateError: typeof import("@/lib/payments/provider").PaymentStateError;
     let provider: InstanceType<typeof MockPaymentProvider>;
@@ -54,7 +53,6 @@ describe(
     let counter = 0;
     const key = () => `key-${Date.now()}-${counter++}-abcdefgh`;
     let savedRefund: typeof MockPaymentProvider.prototype.refund;
-    let savedCharge: typeof MockPaymentProvider.prototype.chargeSavedMethod;
 
     async function wipe() {
       await prisma.debtSettlement.deleteMany({});
@@ -73,7 +71,6 @@ describe(
       await prisma.cronRun.deleteMany({});
       await prisma.hoursPackage.deleteMany({});
       await prisma.payment.deleteMany({});
-      await prisma.paymentMethod.deleteMany({});
       await prisma.appointment.deleteMany({});
       await prisma.mockProviderRecord.deleteMany({});
       await prisma.pinThrottle.deleteMany({});
@@ -99,21 +96,18 @@ describe(
       shiftSvc = await import("@/lib/shifts/schedule");
       shiftBill = await import("@/lib/shifts/billing");
       shiftLife = await import("@/lib/shifts/lifecycle");
-      methods = await import("@/lib/payments/saved-methods");
       hoursDb = await import("@/lib/opening-hours-db");
       pw = await import("@/lib/password");
-      ({ MockPaymentProvider } = await import("@/lib/payments/mock-provider"));
+      ({ MockPaymentProvider } = await import("@/lib/payments/testing/mock-provider"));
       ({ PrismaMockStore } = await import("@/lib/payments/mock-store"));
       ({ PaymentStateError } = await import("@/lib/payments/provider"));
       savedRefund = MockPaymentProvider.prototype.refund;
-      savedCharge = MockPaymentProvider.prototype.chargeSavedMethod;
       await wipe();
       await prisma.user.deleteMany({ where: { name: { startsWith: "fin " } } });
     });
 
     beforeEach(async () => {
       MockPaymentProvider.prototype.refund = savedRefund;
-      MockPaymentProvider.prototype.chargeSavedMethod = savedCharge;
       await wipe();
       await prisma.user.deleteMany({ where: { name: { startsWith: "fin " } } });
       provider = new MockPaymentProvider(SECRET, new PrismaMockStore(prisma));
@@ -143,7 +137,6 @@ describe(
     after(async () => {
       if (!prisma) return;
       MockPaymentProvider.prototype.refund = savedRefund;
-      MockPaymentProvider.prototype.chargeSavedMethod = savedCharge;
       await wipe();
       await prisma.user.deleteMany({ where: { name: { startsWith: "fin " } } });
       await prisma.$disconnect();
@@ -368,7 +361,7 @@ describe(
       // כל התשלום כאן דרך ספק ה-Mock (SANDBOX): לא נכלל בהכנסה האמיתית, וה-note משקף זאת
       assert.equal(o.collected.sandboxGrossAgorot, 7500);
       assert.equal(o.collected.liveGrossAgorot, 0);
-      assert.match(o.environmentNote, /Mock/);
+      assert.match(o.environmentNote, /SANDBOX/);
     });
 
     test("תשלומי SANDBOX (Mock) לעולם לא נכללים ב-liveGrossAgorot, גם כשיש גם תשלום LIVE אמיתי", async () => {
@@ -1726,8 +1719,10 @@ describe(
 
     // ───────────── משמרות ─────────────
 
-    async function shiftWorld() {
-      // "היום" הקבוע של בדיקות המשמרות (רביעי 10.2.2027); התחלה ביום שני 15.2.2027
+    /** משמרת של ids.a (תשלום ידני, אין חיוב אוטומטי). payFirst: המנהל מתעד שהחיוב הראשון שולם */
+    async function shiftWorld(opts: { payFirst?: boolean } = {}) {
+      const { payFirst = true } = opts;
+      // "היום" הקבוע של בדיקות המשמרות; התחלה ביום שני 15.2.2027
       for (const wd of [1])
         await hoursDb.replaceWeekday(
           wd,
@@ -1739,12 +1734,6 @@ describe(
         where: { id: ids.a },
         data: { canBookShifts: true },
       });
-      const added = await methods.addMockCard({
-        userId: ids.a,
-        currentPassword: SITE_PASSWORD,
-        provider,
-      });
-      assert.equal(added.status, "OK");
       const NOW = new Date("2027-02-15T09:00:00Z");
       const res = await shiftSvc.createShift({
         userId: ids.a,
@@ -1753,29 +1742,36 @@ describe(
         windowId: "MORNING",
         startDate: "2027-02-15",
         clientKey: key(),
-        provider,
+        createdById: ids.admin,
         now: NOW,
       });
       assert.equal(res.status, "ACTIVE", JSON.stringify(res));
+      if (payFirst) {
+        const first = await prisma.shiftCharge.findFirstOrThrow({ where: { shiftId: res.shiftId, isFirst: true } });
+        await shiftLife.recordManualPayment({
+          chargeId: first.id,
+          adminId: ids.admin,
+          amountAgorot: first.amountAgorot,
+          paidOn: "2027-02-15",
+          confirm: true,
+          now: NOW,
+        });
+      }
       return { shiftId: res.shiftId, NOW };
     }
 
-    test("21-22. חיוב משמרת שנכשל, תקופת חסד והשעיה מוצגים בתמונה הכספית בלי ספירה כפולה עם חובות", async () => {
+    test("21-22. תשלום משמרת שלא התקבל במועד, תקופת חסד והשעיה מוצגים בתמונה הכספית בלי ספירה כפולה עם חובות", async () => {
       const { shiftId } = await shiftWorld();
-      const card = await prisma.paymentMethod.findFirstOrThrow({
-        where: { userId: ids.a },
-      });
-      await provider.declineToken(card.token);
-      const MARCH_15 = new Date("2027-03-15T05:00:00Z");
+      // החיוב של מרץ מועדו 15.3; ביום שאחרי, כשלא תועד תשלום, הוא נכנס לתקופת חסד
       await shiftBill.runMonthlyShiftBilling({
-        provider,
         trigger: "test",
-        now: MARCH_15,
+        now: new Date("2027-03-16T05:00:00Z"),
       });
       const march = await prisma.shiftCharge.findUniqueOrThrow({
         where: { shiftId_month: { shiftId, month: "2027-03" } },
       });
       assert.equal(march.status, "FAILED");
+      assert.equal(march.failureCode, "manual_payment_overdue");
 
       // בתקופת חסד
       const o1 = await overview.getFinanceOverview(
@@ -1797,7 +1793,6 @@ describe(
 
       // אחרי 7 ימים: מושעית, והמשבצות נשמרות
       await shiftBill.runMonthlyShiftBilling({
-        provider,
         trigger: "test",
         now: new Date("2027-03-23T05:00:00Z"),
       });
@@ -1841,7 +1836,10 @@ describe(
     });
 
     test("תשלום ידני שמנהל אישר נכלל בהכנסות בפועל בנפרד מספק הסליקה, בלי ספירה כפולה; לפני אישור מפורש אינו נספר; מופיע בספר התנועות", async () => {
-      const { NOW } = await shiftWorld(); // ids.a: חיוב ראשון דרך הספק (480 ₪)
+      // ids.a: משמרת שהחיוב הראשון שלה טרם תועד (אינה הכנסה). הכנסה מהספק: רכישת חבילה בדף התשלום של הספק
+      const { NOW } = await shiftWorld({ payFirst: false });
+      const pkg = await buyPackage(ids.a);
+      const PROVIDER = pkg.pricePaidAgorot;
       await prisma.user.update({
         where: { id: ids.b },
         data: { canBookShifts: true },
@@ -1853,10 +1851,8 @@ describe(
         windowId: "MORNING",
         startDate: "2027-02-15",
         clientKey: key(),
-        provider,
         now: NOW,
         createdById: ids.admin,
-        paymentMode: "MANUAL",
       });
       const charge = await prisma.shiftCharge.findFirstOrThrow({
         where: { shiftId: manual.shiftId, isFirst: true },
@@ -1871,9 +1867,9 @@ describe(
           before.collected.manualGrossAgorot,
           before.collected.manualCount,
         ],
-        [MONTHLY, 0, 0],
+        [PROVIDER, 0, 0],
       );
-      assert.equal(before.collected.grossAgorot, MONTHLY);
+      assert.equal(before.collected.grossAgorot, PROVIDER);
 
       // ניסיון בלי אישור מפורש נדחה ואינו משנה כלום
       await assert.rejects(
@@ -1914,7 +1910,7 @@ describe(
           after.collected.count,
           after.collected.netAgorot,
         ],
-        [MONTHLY, 1, MONTHLY, 1, 2 * MONTHLY, 2, 2 * MONTHLY],
+        [PROVIDER, 1, MONTHLY, 1, PROVIDER + MONTHLY, 2, PROVIDER + MONTHLY],
       );
       // אין ספירה כפולה: קריאה חוזרת וניסיון תיעוד שני לא משנים את הסכומים
       await assert.rejects(
@@ -1932,7 +1928,7 @@ describe(
       assert.equal(
         (await overview.getFinanceOverview({}, true, NOW)).collected
           .grossAgorot,
-        2 * MONTHLY,
+        PROVIDER + MONTHLY,
       );
       // טווח תאריכים: התשלום הידני נספר לפי תאריך הקבלה
       const outside = await overview.getFinanceOverview(
@@ -1962,24 +1958,19 @@ describe(
           .length,
         1,
       );
-      // תיעוד ידני אחרי כישלון בספק: החיוב שנכשל (תשלום FAILED) אינו נספר פעמיים
+      // תשלום משמרת ידני אינו יוצר תשלום מול ספק (אין חיוב אוטומטי)
       assert.equal(
-        await prisma.payment.count({
-          where: { status: "SUCCEEDED", purpose: "SHIFT_MONTH" },
-        }),
-        1,
+        await prisma.payment.count({ where: { purpose: "SHIFT_MONTH" } }),
+        0,
       );
     });
 
-    test("חיוב משמרת במצב לא ידוע: הכרעה דורשת אימות או אסמכתה, ומתועדת", async () => {
+    test("חיוב משמרת ישן במצב לא ידוע (מלפני הסרת החיוב האוטומטי): הכרעה דורשת אימות או אסמכתה, ומתועדת", async () => {
       const { shiftId } = await shiftWorld();
-      MockPaymentProvider.prototype.chargeSavedMethod = async () => {
-        throw new Error("timeout");
-      };
-      await shiftBill.runMonthlyShiftBilling({
-        provider,
-        trigger: "test",
-        now: new Date("2027-03-15T05:00:00Z"),
+      // אין יותר חיוב אוטומטי שיכול להיתקע; מצב "לא ידוע" נשאר רק בנתונים ישנים, ולכן נוצר כאן ישירות
+      await prisma.shiftCharge.update({
+        where: { shiftId_month: { shiftId, month: "2027-03" } },
+        data: { status: "UNKNOWN", failureCode: "provider_error" },
       });
       const charge = await prisma.shiftCharge.findUniqueOrThrow({
         where: { shiftId_month: { shiftId, month: "2027-03" } },

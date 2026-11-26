@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { Alert, AuthShell } from "@/components/ui";
+import { GoogleButton } from "@/components/google-button";
+import { googleErrorMessage } from "@/lib/google-errors";
 import { safeInternalPath } from "@/lib/safe-path";
 
 const EMPTY_FORM = {
@@ -20,6 +22,7 @@ function RegisterForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl");
+  const googleError = googleErrorMessage(searchParams.get("error"));
   const [form, setForm] = useState(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -47,6 +50,7 @@ function RegisterForm() {
         email: form.email,
         password: form.password,
         redirect: false,
+        redirectTo: safeInternalPath(callbackUrl, "/account-status"),
       });
 
       if (signInResult?.error) {
@@ -65,6 +69,15 @@ function RegisterForm() {
 
   return (
     <AuthShell title="הרשמה למערכת" subtitle="שדות המסומנים בכוכבית (*) הם שדות חובה">
+      {googleError && (
+        <div className="mb-5">
+          <Alert tone="error">{googleError}</Alert>
+        </div>
+      )}
+      <GoogleButton
+        label="הרשמה עם Google"
+        callbackUrl={`/complete-profile?next=${encodeURIComponent(safeInternalPath(callbackUrl, "/account-status"))}`}
+      />
       <form onSubmit={handleSubmit} className="space-y-5">
         <div className="grid sm:grid-cols-2 gap-5">
           <div>

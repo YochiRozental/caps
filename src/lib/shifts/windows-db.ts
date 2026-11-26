@@ -6,13 +6,14 @@ import { validateWindowInputs, type ShiftWindowDef, type WindowInput } from "@/l
 
 /** גישה למסד של משבצות המשמרת (שרת בלבד). הסדר: sortOrder ואז שעת התחלה */
 
-type Row = { id: string; name: string; startMinutes: number; endMinutes: number; monthlyPriceAgorot: number; active: boolean; sortOrder: number };
+type Row = { id: string; name: string; startMinutes: number; endMinutes: number; monthlyPriceAgorot: number; workshopMonthlyPriceAgorot: number; active: boolean; sortOrder: number };
 const toDef = (r: Row): ShiftWindowDef => ({
   id: r.id,
   name: r.name,
   startMinutes: r.startMinutes,
   endMinutes: r.endMinutes,
   monthlyPriceAgorot: r.monthlyPriceAgorot,
+  workshopMonthlyPriceAgorot: r.workshopMonthlyPriceAgorot,
   active: r.active,
   sortOrder: r.sortOrder,
 });
@@ -56,11 +57,17 @@ export async function saveShiftWindows(params: { adminId: string; windows: Windo
       if (w.id && !byId.has(w.id)) throw new ShiftError("משבצת לא קיימת", "NOT_FOUND");
       if (w.id && seen.has(w.id)) throw new ShiftError("משבצת מופיעה פעמיים", "INVALID");
       if (w.id) seen.add(w.id);
+      const existingRow = w.id ? byId.get(w.id) : undefined;
+      // מחיר סדנאות שלא נשלח: משבצת קיימת שומרת את מחירה, ומשבצת חדשה מקבלת כפול מהרגיל
+      const workshopMonthlyPriceAgorot = w.workshopMonthlyPriceShekel !== undefined
+        ? w.workshopMonthlyPriceShekel * 100
+        : existingRow?.workshopMonthlyPriceAgorot ?? w.monthlyPriceShekel * 200;
       const data = {
         name: w.name.trim(),
         startMinutes: w.startMinutes,
         endMinutes: w.endMinutes,
         monthlyPriceAgorot: w.monthlyPriceShekel * 100,
+        workshopMonthlyPriceAgorot,
         active: w.active,
         sortOrder: index + 1,
       };
@@ -75,7 +82,7 @@ export async function saveShiftWindows(params: { adminId: string; windows: Windo
           entityType: "ShiftWindow",
           entityId: w.id,
           outcome: "ok",
-          before: { name: before.name, startMinutes: before.startMinutes, endMinutes: before.endMinutes, monthlyPriceAgorot: before.monthlyPriceAgorot, active: before.active },
+          before: { name: before.name, startMinutes: before.startMinutes, endMinutes: before.endMinutes, monthlyPriceAgorot: before.monthlyPriceAgorot, workshopMonthlyPriceAgorot: before.workshopMonthlyPriceAgorot, active: before.active },
           after: data,
         });
       } else {

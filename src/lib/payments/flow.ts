@@ -4,11 +4,6 @@ import { BookingError } from "@/lib/booking";
 import { prisma } from "@/lib/prisma";
 import { getMissingBookingDetails } from "@/lib/profile";
 import { getRuntimeProvider } from "@/lib/payments/runtime";
-import {
-  isMockAccessRestricted,
-  isMockUserAllowed,
-  MOCK_ACCESS_DENIED_MESSAGE,
-} from "@/lib/payments/mock-access";
 import { PaymentFlowError } from "@/lib/payments/booking-payment";
 import {
   PaymentError,
@@ -17,20 +12,19 @@ import {
 } from "@/lib/payments/provider";
 
 /**
- * שער לכל נקודות הקצה של זרימת התשלום. הזרימה פעילה רק כשיש ספק תקף לפי getPaymentProvider
- * (כיום: Mock בסביבת sandbox מקומית בלבד). באתר החי אין ספק מוגדר, ולכן כל הנתיבים מחזירים 404 כאילו אינם קיימים.
+ * שער לכל נקודות הקצה של זרימת התשלום. הזרימה פעילה רק כשיש ספק תקף לפי getPaymentProvider (Grow ישירות או דרך
+ * Make). בלי ספק מוגדר כל הנתיבים מחזירים 404 כאילו אינם קיימים.
  */
 export function getFlowProvider(): PaymentProvider | null {
   return getRuntimeProvider();
 }
 
 /**
- * האם המשתמש חייב לעבור את זרימת התשלום (החזקה + תשלום). אותה הכרעה כמו ב-GET /api/payments/status: יש ספק פעיל,
- * ובאתר מותקן עם Mock - רק למשתמשי בדיקה מורשים. משמש לחסימת הזמנה ישירה (ללא תשלום) כשהזרימה פעילה.
+ * האם המשתמש חייב לעבור את זרימת התשלום (החזקה + תשלום). אותה הכרעה כמו ב-GET /api/payments/status: יש ספק פעיל.
+ * משמש לחסימת הזמנה ישירה (ללא תשלום) כשהזרימה פעילה.
  */
-export function isPaymentFlowRequiredFor(user: { role: string; email: string | null }): boolean {
-  if (!getFlowProvider()) return false;
-  return !isMockAccessRestricted() || isMockUserAllowed(user);
+export function isPaymentFlowRequiredFor(): boolean {
+  return !!getFlowProvider();
 }
 
 export function notFound() {
@@ -38,12 +32,10 @@ export function notFound() {
 }
 
 /**
- * מסנן providerPaymentId מתוצאה שעומדת לחזור ללקוח ב-JSON. אצל ספק אמיתי (כיום Grow) המזהה הזה הוא מידע פנימי בין
- * השרת שלנו לבין הספק (לדוגמה processId/processToken) שלפי התיעוד שלו אסור לחשוף ללקוח המשלם - בניגוד ל-Mock,
- * שבו המזהה הסימבולי משמש רק את פאנל הבדיקות (SandboxPanel) ולכן ממשיך להיחשף אצלו בדיוק כמו קודם.
+ * מסנן providerPaymentId מתוצאה שעומדת לחזור ללקוח ב-JSON. אצל Grow המזהה הזה הוא מידע פנימי בין השרת שלנו לבין
+ * הספק (processId/processToken) שלפי התיעוד שלו אסור לחשוף ללקוח המשלם.
  */
-export function withoutProviderInternals<T extends { providerPaymentId?: string | null }>(result: T, provider: PaymentProvider): T {
-  if (provider.name === "mock") return result;
+export function withoutProviderInternals<T extends { providerPaymentId?: string | null }>(result: T): T {
   const { providerPaymentId, ...rest } = result;
   void providerPaymentId;
   return rest as T;
@@ -69,13 +61,6 @@ export async function requireBookingUser(): Promise<
       response: NextResponse.json(
         { error: "יש להתחבר", code: "AUTH_REQUIRED" },
         { status: 401 },
-      ),
-    };
-  if (!isMockUserAllowed(user))
-    return {
-      response: NextResponse.json(
-        { error: MOCK_ACCESS_DENIED_MESSAGE, code: "MOCK_NOT_ALLOWED" },
-        { status: 403 },
       ),
     };
   const missing = getMissingBookingDetails(user);
@@ -156,7 +141,6 @@ export function errorResponse(err: unknown) {
       CONFLICT: 409,
       INSUFFICIENT_BALANCE: 409,
       PLAN_CHANGED: 409,
-      NO_PAYMENT_METHOD: 409,
       PROVIDER_ERROR: 502,
     }[err.code];
     return NextResponse.json(

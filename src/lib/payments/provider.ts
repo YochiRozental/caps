@@ -21,8 +21,6 @@ export interface CreatePaymentRequestInput {
   idempotencyKey: string;
   /** מזהה פנימי של הלקוח (לא פרטים אישיים) */
   customerRef: string;
-  /** האם לשמור אמצעי תשלום לחיובים עתידיים (הספק מחזיר טוקן בלבד) */
-  savePaymentMethod?: boolean;
   returnUrl?: string;
   metadata?: Record<string, string>;
 }
@@ -34,15 +32,6 @@ export interface PaymentRequestResult {
   checkoutUrl?: string;
 }
 
-/** אמצעי תשלום שמור. טוקן בלבד: לעולם לא מספר כרטיס מלא או CVV */
-export interface SavedPaymentMethod {
-  token: string;
-  last4?: string;
-  brand?: string;
-  /** MM/YY */
-  expiry?: string;
-}
-
 /** סטטוס תשלום שנשלף מהספק מצד השרת. זה המקור היחיד לאמת; הודעת הצלחה מהדפדפן לא נחשבת */
 export interface VerifiedPaymentStatus {
   providerPaymentId: string;
@@ -50,7 +39,6 @@ export interface VerifiedPaymentStatus {
   amountAgorot: number;
   refundedAgorot: number;
   failureCode?: string;
-  savedPaymentMethod?: SavedPaymentMethod;
   /**
    * כל העסקאות ששולמו שהספק ראה עבור התשלום הזה (מזהה + סכום), כשהספק מסוגל לראות את כל הניסיונות. אופציונלי:
    * ספק שאינו ממלא את השדה נחשב כמי שראה עסקה אחת בלבד. יותר מעסקה אחת = חיוב מרובה, שמזכה פעם אחת ומסומן לטיפול.
@@ -84,23 +72,6 @@ export interface RefundResult {
   amountAgorot: number;
 }
 
-export interface ChargeSavedMethodInput {
-  token: string;
-  /** הסכום משתנה בין חיוב לחיוב (חיוב חודשי לפי מספר המפגשים) */
-  amountAgorot: number;
-  currency: "ILS";
-  description: string;
-  idempotencyKey: string;
-  customerRef: string;
-  metadata?: Record<string, string>;
-}
-
-export interface ChargeResult {
-  providerPaymentId: string;
-  status: ProviderPaymentStatus;
-  failureCode?: string;
-}
-
 export interface WebhookInput {
   /** גוף הבקשה הגולמי, בדיוק כפי שהתקבל (החתימה מחושבת עליו) */
   rawBody: string;
@@ -125,12 +96,6 @@ export interface PaymentProvider {
   getPaymentStatus(providerPaymentId: string): Promise<VerifiedPaymentStatus>;
   cancelPayment(providerPaymentId: string): Promise<void>;
   refund(input: RefundInput): Promise<RefundResult>;
-  chargeSavedMethod(input: ChargeSavedMethodInput): Promise<ChargeResult>;
-  /**
-   * האם הטוקן השמור עדיין ניתן לחיוב אצל הספק. אופציונלי: ספק שאינו מממש (או שהיכולת טרם אומתה בתיעוד שלו) נחשב
-   * "לא ניתן לאימות", ואמצעי התשלום לא יוצע לחיוב. רישום PaymentMethod במסד אינו הוכחה שהכרטיס שמיש.
-   */
-  isPaymentMethodUsable?(token: string): Promise<boolean>;
   /** מאמת חתימה ומפרש את ההתראה. זורק WebhookVerificationError אם החתימה לא תקינה */
   parseWebhook(input: WebhookInput): Promise<PaymentWebhookEvent>;
 }
@@ -142,7 +107,7 @@ export class PaymentError extends Error {
   }
 }
 
-/** תצורה חסרה או אסורה (למשל Mock מחוץ לסביבת בדיקות) */
+/** תצורה חסרה או אסורה (למשל Grow ב-live בלי אישור מפורש) */
 export class PaymentConfigError extends PaymentError {}
 
 /** אותו מפתח Idempotency שימש לבקשה עם פרמטרים שונים */

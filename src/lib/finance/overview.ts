@@ -16,10 +16,10 @@ import { STUCK_PAYMENT_MS } from "@/lib/finance/unknown";
  *   נמחל            = ויתורי מנהל; אינו הכנסה ואינו חוב.
  * סכומים באגורות שלמות; הטווח חל על תנועות (תשלומים/החזרים/ויתורים), לא על יתרות נוכחיות (חובות פתוחים וכד').
  *
- * תשלומי דמה (environment=SANDBOX, כולל כל תשלום דרך ספק ה-Mock) נספרים בנפרד מהכנסה אמיתית:
+ * תשלומי דמה (environment=SANDBOX, למשל Grow Sandbox) נספרים בנפרד מהכנסה אמיתית:
  *   collected.liveGrossAgorot    = תשלומי ספק LIVE + תשלומים ידניים שאושרו (אלה היחידים שנחשבים הכנסה אמיתית).
- *   collected.sandboxGrossAgorot = תשלומי ספק SANDBOX בלבד (Mock); לעולם לא נכלל ב-liveGrossAgorot.
- *   collected.grossAgorot/netAgorot ממשיכים לשקף את כל מה שנגבה (כולל Mock), לצורכי מעקב תפעולי בשלב שאין בו
+ *   collected.sandboxGrossAgorot = תשלומי ספק SANDBOX בלבד; לעולם לא נכלל ב-liveGrossAgorot.
+ *   collected.grossAgorot/netAgorot ממשיכים לשקף את כל מה שנגבה (כולל בדיקות), לצורכי מעקב תפעולי בשלב שאין בו
  *   עדיין ספק LIVE; environmentNote מתעד במפורש אם חלק מהנתונים כבר LIVE.
  */
 
@@ -77,7 +77,7 @@ export async function getFinanceOverview(range: Range = {}, includeShifts = true
   const providerGross = providerLiveGross + providerSandboxGross;
   const providerCount = paid.reduce((n, p) => n + p._count, 0);
   const manualGross = manualPaid._sum.manualAmountAgorot ?? 0;
-  // הכנסה אמיתית: ספק LIVE + תשלומים ידניים שאושרו. תשלומי Mock (SANDBOX) לעולם לא נספרים כאן, בכוונה
+  // הכנסה אמיתית: ספק LIVE + תשלומים ידניים שאושרו. תשלומי סביבת בדיקות (SANDBOX) לעולם לא נספרים כאן, בכוונה
   const liveGrossAgorot = providerLiveGross + manualGross;
   const grossCollected = providerGross + manualGross;
   const refundedDone = sum(refundsDone);
@@ -86,11 +86,11 @@ export async function getFinanceOverview(range: Range = {}, includeShifts = true
   const shiftArrears = sum(shiftFailed) + sum(shiftPending);
 
   return {
-    // דינמי ולא קבוע: אם כבר יש תשלום ספק LIVE כלשהו, לעולם לא נטען שהכול Mock
+    // דינמי ולא קבוע: אם כבר יש תשלום ספק LIVE כלשהו, לעולם לא נטען שהכול בדיקות
     environmentNote:
       providerLiveGross > 0
-        ? "יש כאן גם תשלומי ספק LIVE אמיתיים; תשלומי דמה (Mock/SANDBOX) מסוננים מ-liveGrossAgorot ואינם נחשבים הכנסה"
-        : "כל תשלומי הספק כאן בסביבת בדיקות (Mock); אין עדיין תשלום ספק אמיתי אחד",
+        ? "יש כאן גם תשלומי ספק LIVE אמיתיים; תשלומי סביבת בדיקות (SANDBOX) מסוננים מ-liveGrossAgorot ואינם נחשבים הכנסה"
+        : "כל תשלומי הספק כאן בסביבת בדיקות (SANDBOX); אין עדיין תשלום ספק אמיתי אחד",
     range: { from: range.from?.toISOString() ?? null, to: range.to?.toISOString() ?? null },
     collected: {
       /** סך כל מה שהתקבל בפועל: ספק סליקה (LIVE+SANDBOX) + תשלומים ידניים שאושרו (כל תשלום נספר פעם אחת בלבד) */
@@ -102,7 +102,7 @@ export async function getFinanceOverview(range: Range = {}, includeShifts = true
       /** תשלומים ידניים שמנהל אישר (אין החזר אוטומטי עליהם: החזר ידני מחוץ למערכת) */
       manualGrossAgorot: manualGross,
       manualCount: manualPaid._count,
-      /** הכנסה אמיתית בלבד: ספק LIVE + תשלומים ידניים. תשלומי Mock (SANDBOX) לעולם לא נכללים כאן */
+      /** הכנסה אמיתית בלבד: ספק LIVE + תשלומים ידניים. תשלומי סביבת בדיקות (SANDBOX) לעולם לא נכללים כאן */
       liveGrossAgorot,
       /** תשלומי דמה (ספק SANDBOX בלבד): פעילות בדיקות, לעולם לא הכנסה */
       sandboxGrossAgorot: providerSandboxGross,

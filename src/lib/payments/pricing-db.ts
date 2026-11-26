@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { prisma as defaultDb } from "@/lib/prisma";
 import { writeAudit } from "@/lib/finance/audit";
 import { FinanceError } from "@/lib/finance/errors";
-import type { HoursPackageOption } from "@/lib/payments/pricing";
+import { isWorkshopRoom, type HoursPackageOption } from "@/lib/payments/pricing";
 
 /** גישה למסד של התמחור הרגיל (שעה בודדת + כרטיסיות 5/10/20 שעות). שורה בודדת, ניתנת לעריכה ע"י מנהל בלבד (שרת בלבד) */
 
@@ -13,6 +13,11 @@ export interface RegularPricingDef {
   package5Agorot: number;
   package10Agorot: number;
   package20Agorot: number;
+  /** חדר סדנאות: שעה בודדת וכרטיסיות (ברירת מחדל כפול מהרגיל, נערך ע"י מנהל) */
+  workshopHourlyAgorot: number;
+  workshopPackage5Agorot: number;
+  workshopPackage10Agorot: number;
+  workshopPackage20Agorot: number;
   updatedAt: Date;
   updatedById: string | null;
 }
@@ -26,7 +31,9 @@ export async function getRegularPricing(db: Pick<PrismaClient, "regularPricing">
   return row;
 }
 
-export function hoursPackageOptions(p: Pick<RegularPricingDef, "package5Agorot" | "package10Agorot" | "package20Agorot">): HoursPackageOption[] {
+export function hoursPackageOptions(
+  p: Pick<RegularPricingDef, "package5Agorot" | "package10Agorot" | "package20Agorot">
+): HoursPackageOption[] {
   return [
     { hours: 5, priceAgorot: p.package5Agorot },
     { hours: 10, priceAgorot: p.package10Agorot },
@@ -34,11 +41,36 @@ export function hoursPackageOptions(p: Pick<RegularPricingDef, "package5Agorot" 
   ];
 }
 
+/** כרטיסיות חדר סדנאות (5/10/20 שעות), במחירי הסדנאות */
+export function workshopHoursPackageOptions(
+  p: Pick<RegularPricingDef, "workshopPackage5Agorot" | "workshopPackage10Agorot" | "workshopPackage20Agorot">
+): HoursPackageOption[] {
+  return [
+    { hours: 5, priceAgorot: p.workshopPackage5Agorot },
+    { hours: 10, priceAgorot: p.workshopPackage10Agorot },
+    { hours: 20, priceAgorot: p.workshopPackage20Agorot },
+  ];
+}
+
+/** מחיר שעה בודדת לפי סוג החדר (חדר סדנאות במחיר נפרד) */
+export function hourlyAgorotFor(p: Pick<RegularPricingDef, "hourlyAgorot" | "workshopHourlyAgorot">, roomKey: string): number {
+  return isWorkshopRoom(roomKey) ? p.workshopHourlyAgorot : p.hourlyAgorot;
+}
+
+/** אפשרויות כרטיסייה לפי סוג (רגילה / חדר סדנאות) */
+export function packageOptionsFor(p: RegularPricingDef, workshop: boolean): HoursPackageOption[] {
+  return workshop ? workshopHoursPackageOptions(p) : hoursPackageOptions(p);
+}
+
 export interface RegularPricingInput {
   hourlyAgorot: number;
   package5Agorot: number;
   package10Agorot: number;
   package20Agorot: number;
+  workshopHourlyAgorot: number;
+  workshopPackage5Agorot: number;
+  workshopPackage10Agorot: number;
+  workshopPackage20Agorot: number;
 }
 
 function positiveAgorot(value: unknown, label: string): number {
@@ -55,8 +87,23 @@ export function validateRegularPricingInput(input: Record<string, unknown>): Reg
     package5Agorot: positiveAgorot(input.package5Agorot, "מחיר כרטיסיית 5 שעות"),
     package10Agorot: positiveAgorot(input.package10Agorot, "מחיר כרטיסיית 10 שעות"),
     package20Agorot: positiveAgorot(input.package20Agorot, "מחיר כרטיסיית 20 שעות"),
+    workshopHourlyAgorot: positiveAgorot(input.workshopHourlyAgorot, "מחיר שעה בודדת בחדר סדנאות"),
+    workshopPackage5Agorot: positiveAgorot(input.workshopPackage5Agorot, "מחיר כרטיסיית 5 שעות בחדר סדנאות"),
+    workshopPackage10Agorot: positiveAgorot(input.workshopPackage10Agorot, "מחיר כרטיסיית 10 שעות בחדר סדנאות"),
+    workshopPackage20Agorot: positiveAgorot(input.workshopPackage20Agorot, "מחיר כרטיסיית 20 שעות בחדר סדנאות"),
   };
 }
+
+const pickPricing = (r: RegularPricingInput): Record<string, number> => ({
+  hourlyAgorot: r.hourlyAgorot,
+  package5Agorot: r.package5Agorot,
+  package10Agorot: r.package10Agorot,
+  package20Agorot: r.package20Agorot,
+  workshopHourlyAgorot: r.workshopHourlyAgorot,
+  workshopPackage5Agorot: r.workshopPackage5Agorot,
+  workshopPackage10Agorot: r.workshopPackage10Agorot,
+  workshopPackage20Agorot: r.workshopPackage20Agorot,
+});
 
 /**
  * שמירת התמחור הרגיל. עדכון במקום (אין היסטוריית גרסאות לשורה הזו — לא נדרשת: תשלומים וחבילות קיימים שומרים
@@ -77,8 +124,8 @@ export async function saveRegularPricing(params: { adminId: string; input: Regul
       entityType: "RegularPricing",
       entityId: SINGLETON_ID,
       outcome: "ok",
-      before: { hourlyAgorot: before.hourlyAgorot, package5Agorot: before.package5Agorot, package10Agorot: before.package10Agorot, package20Agorot: before.package20Agorot },
-      after: { hourlyAgorot: input.hourlyAgorot, package5Agorot: input.package5Agorot, package10Agorot: input.package10Agorot, package20Agorot: input.package20Agorot },
+      before: pickPricing(before),
+      after: pickPricing(input),
     });
     return updated;
   });

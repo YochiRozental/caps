@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { findHoursPackage, packageExpiry, packageMinutes } from "@/lib/payments/pricing";
-import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
+import { getRegularPricing, packageOptionsFor } from "@/lib/payments/pricing-db";
 import type { PaidTransaction, PaymentProvider, VerifiedPaymentStatus } from "@/lib/payments/provider";
 import { recordPaymentAnomaly } from "@/lib/payments/anomalies";
 import { timeStep } from "@/lib/payments/timing";
@@ -24,6 +24,8 @@ export interface StartedPackagePurchase {
   providerPaymentId?: string;
   checkoutUrl?: string;
   hours: number;
+  /** כרטיסיית חדר סדנאות */
+  workshop: boolean;
   amountAgorot: number;
   status: string;
 }
@@ -36,10 +38,12 @@ export interface StartedPackagePurchase {
 export async function startPackagePurchase(params: {
   userId: string;
   hours: number;
+  /** כרטיסיית חדר סדנאות (מחיר נפרד, ומנוצלת רק להזמנות בחדר סדנאות). ברירת מחדל: כרטיסייה רגילה */
+  workshop?: boolean;
   clientKey: string;
   provider: PaymentProvider;
 }): Promise<StartedPackagePurchase> {
-  const { userId, hours, clientKey, provider } = params;
+  const { userId, hours, clientKey, provider, workshop = false } = params;
 
   const user = await timeStep("db.user", () => prisma.user.findUnique({ where: { id: userId }, select: { role: true, status: true } }));
   if (!user) throw new PaymentFlowError("המשתמש לא נמצא", "NOT_FOUND");
@@ -48,7 +52,7 @@ export async function startPackagePurchase(params: {
     throw new PaymentFlowError("רק לקוח מאושר רשאי לרכוש חבילה", "FORBIDDEN");
   }
   const pricing = await timeStep("db.pricing", () => getRegularPricing());
-  const option = findHoursPackage(hours, hoursPackageOptions(pricing));
+  const option = findHoursPackage(hours, packageOptionsFor(pricing, workshop));
   if (!option) throw new PaymentFlowError("חבילה לא קיימת", "INVALID");
   if (!CLIENT_KEY.test(clientKey)) throw new PaymentFlowError("מפתח הבקשה אינו תקין", "INVALID");
 
@@ -60,6 +64,7 @@ export async function startPackagePurchase(params: {
         userId,
         purpose: "PACKAGE",
         packageHours: option.hours,
+        packageWorkshop: workshop,
         amountAgorot: option.priceAgorot,
         status: "PENDING",
         environment: environmentOf(provider),
@@ -70,7 +75,7 @@ export async function startPackagePurchase(params: {
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     payment = await prisma.payment.findUniqueOrThrow({ where: { idempotencyKey } });
-    if (payment.userId !== userId || payment.purpose !== "PACKAGE" || payment.packageHours !== option.hours) {
+    if (payment.userId !== userId || payment.purpose !== "PACKAGE" || payment.packageHours !== option.hours || payment.packageWorkshop !== workshop) {
       throw new PaymentFlowError("מפתח הבקשה כבר שימש לרכישה אחרת", "CONFLICT");
     }
   }
@@ -80,6 +85,7 @@ export async function startPackagePurchase(params: {
       paymentId: payment.id,
       providerPaymentId: payment.providerPaymentId ?? undefined,
       hours: option.hours,
+      workshop,
       amountAgorot: payment.amountAgorot,
       status: payment.status,
     };
@@ -89,10 +95,10 @@ export async function startPackagePurchase(params: {
   const requestInput = {
     amountAgorot: payment.amountAgorot,
     currency: "ILS" as const,
-    description: `רכישת חבילת ${option.hours} שעות`,
+    description: `רכישת חבילת ${option.hours} שעות${workshop ? " (חדר סדנאות)" : ""}`,
     idempotencyKey: payment.idempotencyKey,
     customerRef: userId,
-    metadata: { packageHours: String(option.hours) },
+    metadata: { packageHours: String(option.hours), ...(workshop ? { packageWorkshop: "true" } : {}) } as Record<string, string>,
   };
   const request = await timeStep("provider", () => provider.createPaymentRequest(requestInput));
   if (!payment.providerPaymentId) {
@@ -110,6 +116,7 @@ export async function startPackagePurchase(params: {
     providerPaymentId: request.providerPaymentId,
     checkoutUrl: request.checkoutUrl,
     hours: option.hours,
+    workshop,
     amountAgorot: payment.amountAgorot,
     status: payment.status,
   };
@@ -295,6 +302,7 @@ export async function finalizePackagePayment(params: {
         data: {
           userId: payment.userId,
           hours,
+          workshop: payment.packageWorkshop,
           pricePaidAgorot: payment.amountAgorot,
           minutesTotal: packageMinutes(hours),
           minutesRemaining: packageMinutes(hours),

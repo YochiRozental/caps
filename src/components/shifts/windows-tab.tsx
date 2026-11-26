@@ -13,6 +13,8 @@ interface Row {
   start: string;
   end: string;
   price: string;
+  /** מחיר חדר סדנאות; ריק במשבצת חדשה = כפול מהמחיר הרגיל */
+  workshopPrice: string;
   active: boolean;
 }
 
@@ -28,6 +30,7 @@ const fromDef = (w: ShiftWindowDef): Row => ({
   start: hhmm(w.startMinutes),
   end: hhmm(w.endMinutes),
   price: String(w.monthlyPriceAgorot / 100),
+  workshopPrice: String(w.workshopMonthlyPriceAgorot / 100),
   active: w.active,
 });
 
@@ -37,6 +40,7 @@ const toInput = (r: Row): WindowInput => ({
   startMinutes: toMinutes(r.start),
   endMinutes: toMinutes(r.end),
   monthlyPriceShekel: r.price.trim() === "" ? NaN : Number(r.price),
+  workshopMonthlyPriceShekel: r.workshopPrice.trim() === "" ? undefined : Number(r.workshopPrice),
   active: r.active,
 });
 
@@ -64,7 +68,7 @@ export function WindowsTab({ onChanged, tell }: { onChanged: () => void; tell: (
 
   const update = (key: string, patch: Partial<Row>) => setRows(rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const addRow = () =>
-    setRows([...rows, { key: `new-${++newRowCounter}`, name: "", start: "07:00", end: "11:00", price: "", active: true }]);
+    setRows([...rows, { key: `new-${++newRowCounter}`, name: "", start: "07:00", end: "11:00", price: "", workshopPrice: "", active: true }]);
 
   const inputs = rows.map(toInput);
   const problem = validateWindowInputs(inputs);
@@ -86,7 +90,7 @@ export function WindowsTab({ onChanged, tell }: { onChanged: () => void; tell: (
 
   return (
     <section className="space-y-4" data-testid="windows-tab">
-      <SectionTitle hint="מחיר חודשי קבוע לכל משבצת, כולל מע&quot;מ">משבצות ומחירים</SectionTitle>
+      <SectionTitle hint="מחיר חודשי קבוע לכל משבצת, כולל מע&quot;מ. חדר סדנאות במחיר נפרד (ברירת מחדל: כפול)">משבצות ומחירים</SectionTitle>
       <p className="text-sm text-stone-600">
         שינוי שעות או מחיר חל על <strong>הזמנות חדשות ועל שינויים שיאושרו מכאן והלאה</strong>. משמרות קיימות, מופעים וחיובים שכבר נקבעו אינם משתנים.
         משבצת שאינה נחוצה אפשר להשבית (אין מחיקה, כי משמרות קיימות מצביעות עליה). המחיר הוא בשקלים שלמים.
@@ -99,6 +103,7 @@ export function WindowsTab({ onChanged, tell }: { onChanged: () => void; tell: (
               <th>משעה</th>
               <th>עד שעה</th>
               <th>מחיר לחודש (₪)</th>
+              <th>מחיר חדר סדנאות (₪)</th>
               <th>פעילה</th>
             </tr>
           </thead>
@@ -117,6 +122,9 @@ export function WindowsTab({ onChanged, tell }: { onChanged: () => void; tell: (
                   </td>
                   <td>
                     <input aria-label="מחיר לחודש" type="number" min={1} step={1} inputMode="numeric" dir="ltr" className="field" value={r.price} onChange={(e) => update(r.key, { price: e.target.value })} />
+                  </td>
+                  <td>
+                    <input aria-label="מחיר לחודש בחדר סדנאות" type="number" min={1} step={1} inputMode="numeric" dir="ltr" className="field" placeholder={r.price.trim() === "" ? "" : String(Number(r.price) * 2)} value={r.workshopPrice} onChange={(e) => update(r.key, { workshopPrice: e.target.value })} />
                   </td>
                   <td>
                     <input aria-label="משבצת פעילה" type="checkbox" className="w-5 h-5" checked={r.active} onChange={(e) => update(r.key, { active: e.target.checked })} />

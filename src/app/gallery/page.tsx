@@ -2,6 +2,7 @@ import { BrandHeader, EmptyState } from "@/components/ui";
 import { GalleryGrid } from "@/components/gallery/gallery-grid";
 import { prisma } from "@/lib/prisma";
 
+export const metadata = { title: "גלריה", alternates: { canonical: "/gallery" } };
 export const dynamic = "force-dynamic";
 
 export default async function GalleryPage() {

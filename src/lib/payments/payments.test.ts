@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MockPaymentProvider } from "@/lib/payments/mock-provider";
-import { getPaymentProvider, isLocalDatabaseUrl, type PaymentEnv } from "@/lib/payments/config";
+import { MockPaymentProvider } from "@/lib/payments/testing/mock-provider";
+import { getPaymentProvider, type PaymentEnv } from "@/lib/payments/config";
 import {
   IdempotencyConflictError,
   PaymentConfigError,
@@ -92,64 +92,12 @@ test("partial and full refunds, never above the paid amount, idempotent", async 
   assert.equal((await p.getPaymentStatus(providerPaymentId)).refundedAgorot, 5200);
 });
 
-test("saved payment method: token only, variable-amount recurring charge", async () => {
-  const p = makeProvider();
-  const { providerPaymentId } = await p.createPaymentRequest({
-    ...baseRequest,
-    idempotencyKey: "k1",
-    savePaymentMethod: true,
-  });
-  await p.completeCheckout(providerPaymentId, "success");
-  const method = (await p.getPaymentStatus(providerPaymentId)).savedPaymentMethod;
-  assert.ok(method?.token);
-  assert.deepEqual(Object.keys(method!).sort(), ["brand", "expiry", "last4", "token"]);
-
-  const month1 = await p.chargeSavedMethod({
-    token: method!.token,
-    amountAgorot: 66560,
-    currency: "ILS",
-    description: "month 1",
-    idempotencyKey: "m1",
-    customerRef: "user-1",
-  });
-  assert.equal(month1.status, "SUCCEEDED");
-  const retry = await p.chargeSavedMethod({
-    token: method!.token,
-    amountAgorot: 66560,
-    currency: "ILS",
-    description: "month 1",
-    idempotencyKey: "m1",
-    customerRef: "user-1",
-  });
-  assert.equal(retry.providerPaymentId, month1.providerPaymentId);
-
-  await p.declineToken(method!.token);
-  const declined = await p.chargeSavedMethod({
-    token: method!.token,
-    amountAgorot: 83200,
-    currency: "ILS",
-    description: "month 2",
-    idempotencyKey: "m2",
-    customerRef: "user-1",
-  });
-  assert.equal(declined.status, "FAILED");
-
-  const unknown = await p.chargeSavedMethod({
-    token: "nope",
-    amountAgorot: 100,
-    currency: "ILS",
-    description: "x",
-    idempotencyKey: "m3",
-    customerRef: "user-1",
-  });
-  assert.equal(unknown.status, "FAILED");
-});
-
-test("a payment is not saved as a method unless requested", async () => {
+test("תשלום שהושלם לא מחזיר אמצעי תשלום שמור או טוקן: אין כרטיס שמור במערכת", async () => {
   const p = makeProvider();
   const { providerPaymentId } = await p.createPaymentRequest({ ...baseRequest, idempotencyKey: "k1" });
   await p.completeCheckout(providerPaymentId, "success");
-  assert.equal((await p.getPaymentStatus(providerPaymentId)).savedPaymentMethod, undefined);
+  const status = await p.getPaymentStatus(providerPaymentId);
+  assert.deepEqual(Object.keys(status).filter((k) => status[k as keyof typeof status] !== undefined).sort(), ["amountAgorot", "providerPaymentId", "refundedAgorot", "status"]);
 });
 
 test("amounts must be positive integers", async () => {
@@ -175,52 +123,31 @@ test("webhook: valid signature accepted, tampering and missing signature rejecte
   await assert.rejects(() => p.parseWebhook(other), WebhookVerificationError);
 });
 
-// ---- הפרדת Mock מסליקה אמיתית ----
+// ---- אין ספק מדומה באתר: רק Grow / Make ----
 
-const goodEnv: PaymentEnv = {
-  NODE_ENV: "development",
-  PAYMENT_PROVIDER: "mock",
-  PAYMENT_ENVIRONMENT: "sandbox",
-  PAYMENT_MOCK_ENABLED: "true",
-  PAYMENT_WEBHOOK_SECRET: SECRET,
-  DATABASE_URL: "postgresql://u:p@localhost:5433/clinics_payments_dev",
-};
-
-test("mock provider is created only when every guard passes", () => {
-  assert.equal(getPaymentProvider(goodEnv).name, "mock");
+test("mock אינו ספק מוכר באתר, גם עם כל הדגלים שפעם התירו אותו", () => {
+  const legacyMockEnv = {
+    NODE_ENV: "development",
+    PAYMENT_PROVIDER: "mock",
+    PAYMENT_ENVIRONMENT: "sandbox",
+    PAYMENT_MOCK_ENABLED: "true",
+    PAYMENT_MOCK_ALLOW_DEPLOYED: "true",
+    PAYMENT_MOCK_OPEN_TO_ALL: "true",
+    PAYMENT_WEBHOOK_SECRET: SECRET,
+    DATABASE_URL: "postgresql://u:p@localhost:5433/clinics_payments_dev",
+  } as PaymentEnv;
+  assert.throws(() => getPaymentProvider(legacyMockEnv), /לא מוכר/);
+  assert.throws(() => getPaymentProvider({ ...legacyMockEnv, PAYMENT_PROVIDER: " MOCK " }), /לא מוכר/);
 });
 
-test("mock is refused when any single guard fails", () => {
-  const broken: PaymentEnv[] = [
-    { ...goodEnv, NODE_ENV: "production" },
-    { ...goodEnv, PAYMENT_ENVIRONMENT: "live" },
-    { ...goodEnv, PAYMENT_ENVIRONMENT: undefined },
-    { ...goodEnv, PAYMENT_MOCK_ENABLED: undefined },
-    { ...goodEnv, PAYMENT_MOCK_ENABLED: "yes" },
-    { ...goodEnv, PAYMENT_WEBHOOK_SECRET: undefined },
-    { ...goodEnv, PAYMENT_WEBHOOK_SECRET: "short" },
-    { ...goodEnv, DATABASE_URL: undefined },
-    { ...goodEnv, DATABASE_URL: "postgresql://u:p@ep-x-pooler.eu-central-1.aws.neon.tech/neondb" },
-    { ...goodEnv, DATABASE_URL: "not a url" },
-  ];
-  for (const env of broken) {
-    assert.throws(() => getPaymentProvider(env), PaymentConfigError, JSON.stringify(env));
-  }
-});
-
-test("mock stays refused on a production build even with sandbox flags and a local DB", () => {
-  assert.throws(() => getPaymentProvider({ ...goodEnv, NODE_ENV: "production" }), PaymentConfigError);
-});
-
-test("error messages never leak the secret or the database URL", () => {
+test("error messages never leak configured values", () => {
   try {
-    getPaymentProvider({ ...goodEnv, DATABASE_URL: "postgresql://user:hunter2@db.example.com/x", PAYMENT_ENVIRONMENT: "live" });
+    getPaymentProvider({ PAYMENT_PROVIDER: "grow", PAYMENT_ENVIRONMENT: "live", GROW_USER_ID: "hunter2-user", GROW_PAGE_CODE: "secret-page" });
     assert.fail("should throw");
   } catch (err) {
     assert.ok(err instanceof PaymentConfigError);
-    assert.ok(!err.message.includes("hunter2"));
-    assert.ok(!err.message.includes("db.example.com"));
-    assert.ok(!err.message.includes(SECRET));
+    assert.ok(!err.message.includes("hunter2-user"));
+    assert.ok(!err.message.includes("secret-page"));
   }
 });
 
@@ -247,20 +174,3 @@ test("grow: חסום מחוץ ל-sandbox, ודורש משתני סביבה מפ�
   assert.throws(() => getPaymentProvider({ ...growEnv, GROW_SUCCESS_URL: undefined }), PaymentConfigError);
 });
 
-test("PAYMENT_MOCK_ALLOW_DEPLOYED מתיר Mock על שרת מותקן ומסד מרוחק, אך לא מבטל את שאר התנאים", () => {
-  const deployed = { ...goodEnv, NODE_ENV: "production", DATABASE_URL: "postgresql://u:p@ep-x.neon.tech/x", PAYMENT_MOCK_ALLOW_DEPLOYED: "true" };
-  assert.equal(getPaymentProvider(deployed).name, "mock");
-  assert.throws(() => getPaymentProvider({ ...deployed, PAYMENT_MOCK_ALLOW_DEPLOYED: "yes" }), PaymentConfigError, "רק הערך true");
-  assert.throws(() => getPaymentProvider({ ...deployed, PAYMENT_ENVIRONMENT: "live" }), PaymentConfigError);
-  assert.throws(() => getPaymentProvider({ ...deployed, PAYMENT_MOCK_ENABLED: "false" }), PaymentConfigError);
-  assert.throws(() => getPaymentProvider({ ...deployed, PAYMENT_WEBHOOK_SECRET: "short" }), PaymentConfigError);
-});
-
-test("isLocalDatabaseUrl", () => {
-  assert.equal(isLocalDatabaseUrl("postgresql://a:b@localhost:5433/x"), true);
-  assert.equal(isLocalDatabaseUrl("postgresql://a:b@127.0.0.1/x"), true);
-  assert.equal(isLocalDatabaseUrl("postgresql://a:b@[::1]:5432/x"), true);
-  assert.equal(isLocalDatabaseUrl("postgresql://a:b@localhost.evil.com/x"), false);
-  assert.equal(isLocalDatabaseUrl("postgresql://a:b@ep-x.neon.tech/x"), false);
-  assert.equal(isLocalDatabaseUrl(undefined), false);
-});

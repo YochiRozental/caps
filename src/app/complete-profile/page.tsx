@@ -34,9 +34,7 @@ export default async function CompleteProfilePage({
         phone: user.phone ?? "",
         idNumber: user.idNumber ?? "",
         gender: user.gender ?? "",
-        cardExpiry: user.cardExpiry ?? "",
       }}
-      cardLast4={user.cardLast4}
     />
   );
 }

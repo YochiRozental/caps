@@ -5,11 +5,15 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { Alert, AuthShell } from "@/components/ui";
+import { GoogleButton } from "@/components/google-button";
+import { googleErrorMessage } from "@/lib/google-errors";
+import { safeInternalPath } from "@/lib/safe-path";
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") ?? "/booking";
+  const googleError = googleErrorMessage(searchParams.get("error"));
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,6 +29,8 @@ function LoginForm() {
       email,
       password,
       redirect: false,
+      // כתובת היעד מפורשת: אחרת Auth.js משתמש בכתובת הדף הנוכחי, ו-?error= שנשאר בה (למשל אחרי כשל Google) נקרא בטעות ככשל התחברות
+      redirectTo: safeInternalPath(callbackUrl, "/booking"),
     });
 
     if (result?.error) {
@@ -42,6 +48,13 @@ function LoginForm() {
       title="התחברות"
       subtitle="ברוכים השבים! התחברו כדי לקבוע ולנהל הזמנות."
     >
+      {googleError && (
+        <div className="mb-5">
+          <Alert tone="error">{googleError}</Alert>
+        </div>
+      )}
+      {/* משתמש חדש מושלם בפרטי החובה במסך הקיים; מי שכבר שלם ממשיך ישר ליעד */}
+      <GoogleButton callbackUrl={`/complete-profile?next=${encodeURIComponent(safeInternalPath(callbackUrl, "/booking"))}`} />
       <form onSubmit={handleSubmit} className="space-y-5">
         <div>
           <label htmlFor="login-email" className="field-label">

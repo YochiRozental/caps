@@ -19,8 +19,6 @@ const FULL_USER = {
   email: "a@b.co",
   phone: "0501234567",
   idNumber: "000000018",
-  cardLast4: "4242",
-  cardExpiry: "12/40",
   passwordHash: "HASH",
   gender: "MALE",
 };
@@ -88,7 +86,7 @@ test("createAppointment: התגובה לא חושפת passwordHash, ת\"ז, כר
 
     // אף שדה רגיש לא מוחזר, ולא נבקש אותו מהמסד
     const json = JSON.stringify(result);
-    for (const secret of ["passwordHash", "HASH", "idNumber", "000000018", "cardLast4", "4242", "cardExpiry", "a@b.co", "0501234567"]) {
+    for (const secret of ["passwordHash", "HASH", "idNumber", "000000018", "a@b.co", "0501234567"]) {
       assert.ok(!json.includes(secret), `התגובה לא אמורה לכלול ${secret}`);
     }
     assert.notEqual(stub.calls.include?.user, true);

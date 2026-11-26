@@ -13,7 +13,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
  */
 const CANDIDATE_SQL = `
   "email" IS NULL AND "firstName" IS NULL AND "lastName" IS NULL AND "idNumber" IS NULL AND "gender" IS NULL
-  AND "cardLast4" IS NULL AND "mustChangePassword" = false AND "role" = 'CLIENT'
+  AND "mustChangePassword" = false AND "role" = 'CLIENT'
   AND "phone" IS NOT NULL AND "ivrPinHash" IS NULL
 `;
 

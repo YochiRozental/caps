@@ -16,7 +16,7 @@ import { isTransientVerifyFailure } from "@/lib/payments/verify-errors";
  * (MockProviderRecord), בלי מיגרציה.
  *
  * לא יוצרים כאן קישורי תשלום: תשלום בלי מזהה ספק מתואם רק אם הספק מוצא בקשה קיימת לפי מפתח ה-idempotency בלי פנייה
- * לרשת (findExistingPaymentRequest). אחרת הוא נשאר כפי שהוא. חיובי כרטיס שמור אינם בתחום (ראו reconcilePendingPayments).
+ * לרשת (findExistingPaymentRequest). אחרת הוא נשאר כפי שהוא.
  */
 
 export const RECOVERY_MIN_AGE_MS = 2 * 60 * 1000;
@@ -78,8 +78,6 @@ export function defaultRecoveryDeps(provider: PaymentProvider, now: Date): Recov
           status: "PENDING",
           provider: provider.name,
           environment: environmentOf(provider),
-          // חיוב כרטיס שמור (paymentMethodId) אינו דף תשלום מתארח: מטופל בנפרד ואינו נבדק כאן
-          paymentMethodId: null,
           createdAt: { gte: from, lte: to },
         },
         select: { id: true, createdAt: true, providerPaymentId: true, idempotencyKey: true },

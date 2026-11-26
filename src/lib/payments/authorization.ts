@@ -10,7 +10,8 @@ import { verifyIvrPin, type PinVerifyResult } from "@/lib/ivr-pin/service";
  * מזהה ההרשאה הוא רק מצביע, וההוכחה היא השורה הנעולה במסד.
  */
 
-export type AuthorizedAction = "CONFIRM_BALANCE" | "PAY_CARD";
+/** הפעולה היחידה בטלפון: אישור הזמנה מיתרה. אין חיוב בכסף בטלפון (אין כרטיס שמור; תשלום רק בדף של Grow באתר) */
+export type AuthorizedAction = "CONFIRM_BALANCE";
 
 export interface AuthorizationBinding {
   userId: string;
@@ -37,7 +38,7 @@ interface Deps {
 function assertBindingShape(b: AuthorizationBinding) {
   const ok =
     Number.isInteger(b.amountAgorot) && Number.isInteger(b.packageMinutes) && b.amountAgorot >= 0 && b.packageMinutes >= 0 &&
-    (b.action === "CONFIRM_BALANCE" ? b.amountAgorot === 0 && b.packageMinutes > 0 : b.amountAgorot > 0);
+    b.action === "CONFIRM_BALANCE" && b.amountAgorot === 0 && b.packageMinutes > 0;
   if (!ok) throw new RangeError("invalid authorization binding");
 }
 

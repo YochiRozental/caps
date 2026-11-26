@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, EmptyState, Icon, Loading, SectionTitle, StatCard } from "@/components/ui";
 import type { IconName } from "@/components/ui";
-import { PaymentStatusBadge, SandboxNotice, SandboxPanel } from "@/components/payments/bits";
+import { PaymentStatusBadge } from "@/components/payments/bits";
 import {
   REFUND_REASON_TEXT,
   api,
@@ -11,7 +11,6 @@ import {
   dateTimeText,
   durationText,
   shekel,
-  usePaymentsGate,
   useSingleFlight,
 } from "@/lib/payments/client";
 import type { BalanceView, HistoryEntry, PackageView } from "@/lib/payments/views";
@@ -30,6 +29,8 @@ import {
 } from "@/lib/payments/embedded-checkout";
 
 export interface PackageOfferView {
+  /** כרטיסיית חדר סדנאות (מחיר נפרד, מנוצלת רק בחדר סדנאות) */
+  workshop: boolean;
   hours: number;
   priceAgorot: number;
   savingsAgorot: number;
@@ -44,7 +45,6 @@ const TABS: { id: Tab; label: string; icon: IconName }[] = [
 ];
 
 export function HoursCenter({ canPurchase, packages }: { canPurchase: boolean; packages: PackageOfferView[] }) {
-  const gate = usePaymentsGate();
   const [tab, setTab] = useState<Tab>("balance");
   const [balanceVersion, setBalanceVersion] = useState(0);
   const bump = useCallback(() => setBalanceVersion((v) => v + 1), []);
@@ -85,7 +85,6 @@ export function HoursCenter({ canPurchase, packages }: { canPurchase: boolean; p
 
   return (
     <div className="space-y-6">
-      {gate.sandbox && <SandboxNotice />}
       {recovered && <Alert tone="success">{recovered}</Alert>}
       <div role="tablist" aria-label="חבילות שעות" className="flex gap-2 overflow-x-auto pb-1">
         {TABS.map((t) => (
@@ -104,7 +103,7 @@ export function HoursCenter({ canPurchase, packages }: { canPurchase: boolean; p
       </div>
 
       {tab === "balance" && <BalanceTab key={balanceVersion} onBuy={() => setTab("buy")} />}
-      {tab === "buy" && <BuyTab canPurchase={canPurchase} sandbox={gate.sandbox} onActivated={bump} packages={packages} />}
+      {tab === "buy" && <BuyTab canPurchase={canPurchase} onActivated={bump} packages={packages} />}
       {tab === "history" && <HistoryTab />}
     </div>
   );
@@ -170,7 +169,7 @@ function BalanceTab({ onBuy }: { onBuy: () => void }) {
               <ul className="grid gap-4 sm:grid-cols-2">
                 {view.credits.map((c) => (
                   <li key={c.id} className="card p-5" data-testid="credit">
-                    <p className="font-display text-lg font-bold text-stone-900">זיכוי {durationText(c.minutesRemaining)}</p>
+                    <p className="font-display text-lg font-bold text-stone-900">זיכוי {durationText(c.minutesRemaining)}{c.workshop ? " · חדר סדנאות" : ""}</p>
                     <p className="text-sm text-stone-500 mt-1">
                       התקבל ב-{dateText(c.createdAt)} · בתוקף עד <strong>{dateText(c.expiresAt)}</strong>
                     </p>
@@ -188,7 +187,7 @@ function BalanceTab({ onBuy }: { onBuy: () => void }) {
           <ul className="mt-3 space-y-2 text-sm text-stone-600">
             {view.exhaustedPackages.map((p) => (
               <li key={p.id}>
-                חבילת {p.hours} שעות · נרכשה {dateText(p.purchasedAt)}
+                חבילת {p.hours} שעות{p.workshop ? " (חדר סדנאות)" : ""} · נרכשה {dateText(p.purchasedAt)}
               </li>
             ))}
           </ul>
@@ -202,7 +201,7 @@ function BalanceTab({ onBuy }: { onBuy: () => void }) {
           <ul className="mt-3 space-y-2 text-sm text-stone-600">
             {view.expiredPackages.map((p) => (
               <li key={p.id}>
-                חבילת {p.hours} שעות · פגה ב-{dateText(p.expiresAt)} · נותרו {durationText(p.minutesRemaining)} שלא נוצלו
+                חבילת {p.hours} שעות{p.workshop ? " (חדר סדנאות)" : ""} · פגה ב-{dateText(p.expiresAt)} · נותרו {durationText(p.minutesRemaining)} שלא נוצלו
               </li>
             ))}
             {view.expiredCredits.map((c) => (
@@ -238,7 +237,7 @@ function PackageCard({ pkg, onCancel }: { pkg: PackageView; onCancel: () => void
     <li className="card p-5 space-y-3" data-testid="package">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="font-display text-lg font-bold text-stone-900">חבילת {pkg.hours} שעות</p>
+          <p className="font-display text-lg font-bold text-stone-900">חבילת {pkg.hours} שעות{pkg.workshop ? " · חדר סדנאות" : ""}</p>
           <p className="text-xs text-stone-400 mt-0.5">שולם {shekel(pkg.pricePaidAgorot)}</p>
         </div>
         <p className="font-display text-2xl font-bold text-brand-700 tabular-nums text-left">{durationText(pkg.minutesRemaining)}</p>
@@ -348,12 +347,13 @@ const RESOLUTION_MESSAGE: Record<Exclude<PurchaseResolution, "activated" | "pend
 };
 
 interface Offer {
+  workshop: boolean;
   hours: number;
   priceAgorot: number;
   key: string;
 }
 
-function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: boolean; sandbox: boolean; onActivated: () => void; packages: PackageOfferView[] }) {
+function BuyTab({ canPurchase, onActivated, packages }: { canPurchase: boolean; onActivated: () => void; packages: PackageOfferView[] }) {
   /** הכרטיסייה שנבחרה (חלונית התשלום פתוחה כשיש ערך) */
   const [offer, setOffer] = useState<Offer | null>(null);
   const [phase, setPhase] = useState<CheckoutPhase>("summary");
@@ -370,7 +370,7 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
   /** בקשת יצירת תשלום רצה כרגע (גם אם החלונית נסגרה) */
   const creatingRef = useRef(false);
   /** המפתח של ניסיון שנכשל, לשימוש חוזר בניסיון הבא לאותה חבילה (אותה רכישה בשרת, לא רכישה חדשה) */
-  const retryKeyRef = useRef<{ hours: number; key: string } | null>(null);
+  const retryKeyRef = useRef<{ hours: number; workshop: boolean; key: string } | null>(null);
   /** הודעת "אימות לא זמין זמנית" מהשרת (503). התשלום עדיין ממתין - לא שגיאה ולא כישלון */
   const [verifyUnavailable, setVerifyUnavailable] = useState<string | null>(null);
 
@@ -461,8 +461,8 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
   function buy(p: PackageOfferView) {
     if (creatingRef.current || openKeyRef.current) return;
     const retry = retryKeyRef.current;
-    const key = retry && retry.hours === p.hours ? retry.key : newClientKey();
-    const o: Offer = { hours: p.hours, priceAgorot: p.priceAgorot, key };
+    const key = retry && retry.hours === p.hours && retry.workshop === p.workshop ? retry.key : newClientKey();
+    const o: Offer = { workshop: p.workshop, hours: p.hours, priceAgorot: p.priceAgorot, key };
     clientTimingRef.current = { clickAt: nowMs() };
     openKeyRef.current = o.key;
     setOffer(o);
@@ -478,19 +478,19 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
 
   async function start(o: Offer | null = offer) {
     if (!o) return;
-    const { hours, key } = o;
+    const { hours, workshop, key } = o;
     await run(async () => {
       // מסומן באופן סינכרוני (לפני כל await), כך שגם לחיצה שנייה באותו רגע רואה שיש בקשה רצה
       creatingRef.current = true;
       try {
-        await createPurchase(hours, key);
+        await createPurchase(hours, workshop, key);
       } finally {
         creatingRef.current = false;
       }
     });
   }
 
-  async function createPurchase(hours: number, key: string) {
+  async function createPurchase(hours: number, workshop: boolean, key: string) {
     setError(null);
     setMessage(null);
     setPhase("creating");
@@ -506,13 +506,13 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
     }>(
       "/api/payments/packages/purchase",
       // נשלחים רק מספר השעות ומפתח אידמפוטנטיות: המחיר נקבע בשרת. אותו מפתח בלחיצה חוזרת = אותה עסקה
-      { body: { hours, clientKey: key } }
+      { body: { hours, workshop, clientKey: key } }
     );
     const stillOpen = openKeyRef.current === key;
     if (clientTimingRef.current) clientTimingRef.current.createMs = nowMs() - clientTimingRef.current.clickAt;
     if (!res.ok) {
       // ניסיון חוזר לאותה חבילה ישתמש באותו מפתח (אותה רכישה בשרת), גם אחרי סגירת החלונית
-      retryKeyRef.current = { hours, key };
+      retryKeyRef.current = { hours, workshop, key };
       const text = res.data.error ?? "לא ניתן ליצור את דף התשלום כעת. לא בוצע חיוב, אפשר לנסות שוב.";
       if (stillOpen) {
         setPhase("summary");
@@ -546,7 +546,7 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
       if (stillOpen) setPhase(checkoutPhaseFor(p.embeddable));
       return;
     }
-    // ספק ללא דף תשלום (Mock מקומי): החלונית נסגרת והמצב מוצג בכרטיס הרכישה הממתינה
+    // ספק שלא החזיר דף תשלום: החלונית נסגרת והמצב מוצג בכרטיס הרכישה הממתינה
     closeModal();
     void verify(p);
   }
@@ -569,7 +569,7 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
     if (!purchase || !canReopenCheckout(purchase, Date.now())) return;
     setError(null);
     setReturnHint("unknown");
-    setOffer({ hours: purchase.hours, priceAgorot: purchase.amountAgorot, key: "" });
+    setOffer({ workshop: false, hours: purchase.hours, priceAgorot: purchase.amountAgorot, key: "" });
     setPhase(checkoutPhaseFor(purchase.embeddable));
   }
 
@@ -631,9 +631,6 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
               {verifyUnavailable}
             </p>
           )}
-          {sandbox && purchase.providerPaymentId && (
-            <SandboxPanel providerPaymentId={purchase.providerPaymentId} onDone={() => void verify(purchase)} />
-          )}
           <div className="flex flex-wrap gap-2">
             {canReopen && (
               <button type="button" className="btn btn-primary btn-sm" onClick={reopen}>
@@ -651,30 +648,42 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
         </section>
       )}
 
-      <section>
-        <SectionTitle hint="כל חבילה תקפה שנה מיום הרכישה, לכל החדרים, וניצולה לפי דקות">חבילות שעות</SectionTitle>
-        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {packages.map((p) => (
-            <li key={p.hours} className="card card-hover p-5 flex flex-col gap-3" data-testid="package-offer">
-              <p className="font-display text-3xl font-bold text-stone-900">{p.hours} שעות</p>
-              <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{shekel(p.priceAgorot)}</p>
-              <ul className="text-sm text-stone-500 space-y-1">
-                <li>{shekel(Math.round(p.priceAgorot / p.hours))} לשעה</li>
-                <li>חיסכון של {shekel(p.savingsAgorot)} לעומת מחיר רגיל</li>
-                <li>תוקף: שנה מיום הרכישה</li>
-              </ul>
-              <button
-                type="button"
-                className="btn btn-primary mt-auto"
-                disabled={!canPurchase || busy || !!purchase || !!offer}
-                onClick={() => buy(p)}
-              >
-                רכישה
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {[false, true].map((workshop) => (
+        <section key={workshop ? "workshop" : "regular"}>
+          <SectionTitle
+            hint={
+              workshop
+                ? "כרטיסיית חדר סדנאות תקפה שנה מיום הרכישה, ומנוצלת רק להזמנות בחדר סדנאות (חבילה רגילה אינה מנוצלת בו)"
+                : "כל חבילה תקפה שנה מיום הרכישה, לכל החדרים מלבד חדר סדנאות, וניצולה לפי דקות"
+            }
+          >
+            {workshop ? "חבילות שעות לחדר סדנאות" : "חבילות שעות"}
+          </SectionTitle>
+          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {packages
+              .filter((p) => p.workshop === workshop)
+              .map((p) => (
+                <li key={p.hours} className="card card-hover p-5 flex flex-col gap-3" data-testid={workshop ? "workshop-package-offer" : "package-offer"}>
+                  <p className="font-display text-3xl font-bold text-stone-900">{p.hours} שעות</p>
+                  <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{shekel(p.priceAgorot)}</p>
+                  <ul className="text-sm text-stone-500 space-y-1">
+                    <li>{shekel(Math.round(p.priceAgorot / p.hours))} לשעה</li>
+                    <li>חיסכון של {shekel(p.savingsAgorot)} לעומת מחיר רגיל</li>
+                    <li>תוקף: שנה מיום הרכישה</li>
+                  </ul>
+                  <button
+                    type="button"
+                    className="btn btn-primary mt-auto"
+                    disabled={!canPurchase || busy || !!purchase || !!offer}
+                    onClick={() => buy(p)}
+                  >
+                    רכישה
+                  </button>
+                </li>
+              ))}
+          </ul>
+        </section>
+      ))}
 
       {offer && (
         <SecureCheckoutModal
@@ -684,7 +693,6 @@ function BuyTab({ canPurchase, sandbox, onActivated, packages }: { canPurchase: 
           checkoutUrl={purchase?.checkoutUrl}
           error={error}
           returnHint={returnHint}
-          sandbox={sandbox}
           onStart={() => {
             clientTimingRef.current = { clickAt: nowMs() };
             void start();

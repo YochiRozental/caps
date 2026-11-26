@@ -25,7 +25,7 @@ describe("תשלום על הזמנה והחזקת חדרים: מול PostgreSQL 
   let prisma: Db;
   let booking: typeof import("@/lib/booking");
   let svc: typeof import("@/lib/payments/booking-payment");
-  let MockPaymentProvider: typeof import("@/lib/payments/mock-provider").MockPaymentProvider;
+  let MockPaymentProvider: typeof import("@/lib/payments/testing/mock-provider").MockPaymentProvider;
   let PrismaMockStore: typeof import("@/lib/payments/mock-store").PrismaMockStore;
   let WebhookVerificationError: typeof import("@/lib/payments/provider").WebhookVerificationError;
 
@@ -64,7 +64,7 @@ describe("תשלום על הזמנה והחזקת חדרים: מול PostgreSQL 
     ({ prisma } = await import("@/lib/prisma"));
     booking = await import("@/lib/booking");
     svc = await import("@/lib/payments/booking-payment");
-    ({ MockPaymentProvider } = await import("@/lib/payments/mock-provider"));
+    ({ MockPaymentProvider } = await import("@/lib/payments/testing/mock-provider"));
     ({ PrismaMockStore } = await import("@/lib/payments/mock-store"));
     ({ WebhookVerificationError } = await import("@/lib/payments/provider"));
     const { jerusalemParts } = await import("@/lib/opening-hours");
@@ -286,7 +286,6 @@ describe("תשלום על הזמנה והחזקת חדרים: מול PostgreSQL 
       environment: provider.environment,
       createPaymentRequest: (i) => provider.createPaymentRequest(i),
       cancelPayment: (id) => provider.cancelPayment(id),
-      chargeSavedMethod: (i) => provider.chargeSavedMethod(i),
       parseWebhook: (i) => provider.parseWebhook(i),
       getPaymentStatus: async (id) => ({ ...(await provider.getPaymentStatus(id)), status: "SUCCEEDED", refundedAgorot: 0 }),
       refund: async (input) => ({ providerRefundId: `late-success-refund:${input.providerPaymentId}`, status: "SUCCEEDED", amountAgorot: input.amountAgorot ?? 0 }),

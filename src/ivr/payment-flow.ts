@@ -3,11 +3,9 @@ import type { RoomKey } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { BookingError, createBookingHold } from "@/lib/booking";
 import { cancelBooking, quoteHold } from "@/lib/payments/booking-payment";
-import { authorizeWithPin, type AuthorizedAction } from "@/lib/payments/authorization";
+import { authorizeWithPin } from "@/lib/payments/authorization";
 import { executeAuthorizedBooking, type AuthorizedBookingResult } from "@/lib/payments/authorized-actions";
-import { regularPriceAgorot } from "@/lib/payments/pricing";
-import { getRegularPricing } from "@/lib/payments/pricing-db";
-import { findUsableCard } from "@/lib/payments/saved-methods";
+
 import { getRuntimeProvider } from "@/lib/payments/runtime";
 import { getHoldDetails } from "@/lib/payments/views";
 import { ROOM_LABELS } from "@/lib/rooms";
@@ -16,7 +14,8 @@ import { spokenMinutes, spokenShekel, spokenWhen } from "@/ivr/spoken";
 
 /**
  * הזמנה בתשלום בטלפון. פועלת רק מאחורי IVR_PAYMENTS_ENABLED ורק כשיש ספק תשלום תקף (ראו booking-flow). משתמשת אך ורק
- * בשירותי שלבים C+D+F.2: החזקה ל-10 דקות, אימות קוד טלפוני, הרשאה חד-פעמית, ביצוע דרך confirm-balance או חיוב אמצעי שמור.
+ * בשירותי שלבים C+D+F.2: החזקה ל-10 דקות, אימות קוד טלפוני, הרשאה חד-פעמית, וביצוע דרך confirm-balance (ניכוי מיתרת שעות).
+ * אין חיוב בכסף בטלפון: אין כרטיס שמור. הזמנה שהיתרה אינה מכסה במלואה מופנית לאתר, לתשלום בדף המאובטח של Grow.
  *
  * אבטחת הקוד: הקוד נקלט רק בבקשת POST שאין בה query בכלל (ראו secureTransport). בקשת GET או POST עם query אינה נקראת
  * כקוד: לא נבדק, לא נספר כניסיון, והשיחה מסתיימת. הקוד לא נרשם בלוג ולא נשמר במצב השיחה.
@@ -38,7 +37,7 @@ const withTimeout = <T extends object>(options: T): T => ({ ...options, timeout:
 
 const MSG = {
   noPin: "לא הוגדר לך קוד טלפוני ולכן לא ניתן להשלים הזמנה בתשלום בטלפון, היכנסו לאזור האישי באתר והגדירו קוד טלפוני, החדר שוחרר",
-  noCard: "אין לך יתרת שעות מספיקה ואין כרטיס שמור, היכנסו לאזור האישי באתר ושמרו אמצעי תשלום, החדר שוחרר ולא בוצע חיוב",
+  noBalance: "אין לך יתרת שעות מספיקה להזמנה הזו, להזמנה בתשלום היכנסו לאתר, החדר שוחרר ולא בוצע חיוב",
   insecure: "אימות בקוד אינו זמין כרגע בערוץ הזה, לא בוצעה פעולה והחדר שוחרר",
   cancelled: "ההזמנה בוטלה והחדר שוחרר, תודה ולהתראות",
   expired: "הזמן להשלמת ההזמנה הסתיים והחדר שוחרר, לא בוצע חיוב, אפשר להתחיל מחדש",
@@ -57,15 +56,11 @@ export function secureTransport(call: Call): boolean {
 
 function resultMessage(result: AuthorizedBookingResult, ctx: { roomLabel: string; start: Date; durationMinutes: number }): { message: string; ok: boolean } {
   switch (result.status) {
-    case "CONFIRMED": {
-      const parts: string[] = [];
-      if (result.paidCashAgorot > 0) parts.push(`חויבו ${spokenShekel(result.paidCashAgorot)}`);
-      if (result.paidFromBalanceMinutes > 0) parts.push(`נוצלו ${spokenMinutes(result.paidFromBalanceMinutes)} מהיתרה`);
+    case "CONFIRMED":
       return {
         ok: true,
-        message: `ההזמנה אושרה, ${ctx.roomLabel}, ${spokenWhen(ctx.start)}, למשך ${spokenMinutes(ctx.durationMinutes)}, ${parts.join(" ו")}, תודה ולהתראות`,
+        message: `ההזמנה אושרה, ${ctx.roomLabel}, ${spokenWhen(ctx.start)}, למשך ${spokenMinutes(ctx.durationMinutes)}, נוצלו ${spokenMinutes(result.paidFromBalanceMinutes)} מהיתרה, תודה ולהתראות`,
       };
-    }
     case "AUTH_INVALID":
       return { ok: false, message: "האימות פג תוקף ולא בוצעה פעולה, אנא התחילו מחדש" };
     case "HOLD_EXPIRED":
@@ -73,23 +68,7 @@ function resultMessage(result: AuthorizedBookingResult, ctx: { roomLabel: string
     case "INSUFFICIENT_BALANCE":
       return { ok: false, message: "יתרת השעות השתנתה ואינה מספיקה, לא נוכו דקות ולא בוצע חיוב, אפשר להתחיל מחדש" };
     case "PLAN_CHANGED":
-      return { ok: false, message: "יתרת השעות השתנתה ולכן סכום התשלום השתנה, לא בוצע חיוב, אנא התחילו מחדש" };
-    case "NO_PAYMENT_METHOD":
-      return { ok: false, message: "לא נמצא כרטיס שמור שניתן לחייב, היכנסו לאזור האישי באתר ושמרו אמצעי תשלום, לא בוצע חיוב" };
-    case "PAYMENT_FAILED":
-      return { ok: false, message: "החיוב נכשל, לא בוצע חיוב וההזמנה לא אושרה" };
-    case "REFUNDED":
-      return {
-        ok: false,
-        message:
-          result.reason === "LATE"
-            ? "התשלום התקבל לאחר שהזמן הסתיים ולכן ההזמנה לא אושרה, הסכום הוחזר במלואו"
-            : "יתרת השעות השתנתה בזמן החיוב ולכן ההזמנה לא אושרה, הסכום הוחזר במלואו ולא נוכו דקות",
-      };
-    case "REFUND_PENDING":
-      return { ok: false, message: "ההזמנה לא אושרה וההחזר הכספי בטיפול, אם לא יתקבל פנו אלינו" };
-    case "PROVIDER_ERROR":
-      return { ok: false, message: "אירעה תקלה בחיוב וההזמנה לא אושרה, נסו שוב מאוחר יותר" };
+      return { ok: false, message: "יתרת השעות השתנתה, לא נוכו דקות ולא בוצע חיוב, אנא התחילו מחדש" };
     default:
       return { ok: false, message: "ההזמנה לא הושלמה, אנא פנו אלינו" };
   }
@@ -131,26 +110,17 @@ export async function runPaidBooking(
     }
     state.holdId = hold.id;
 
-    // 2. זכאות: קוד טלפוני מוגדר, ערוץ בטוח, ותוכנית תשלום (יתרה / כרטיס שמור)
+    // 2. זכאות: קוד טלפוני מוגדר, ערוץ בטוח, ויתרת שעות שמכסה את כל ההזמנה (אין חיוב בכסף בטלפון)
     const account = await prisma.user.findUnique({ where: { id: user.id }, select: { ivrPinHash: true } });
     if (!account?.ivrPinHash) return end(MSG.noPin, { release: true });
     if (!secureTransport(call)) return end(MSG.insecure, { release: true });
 
     const quote = await quoteHold({ appointmentId: hold.id, userId: user.id });
-    const card = quote.fullyCoveredByBalance ? null : await findUsableCard(user.id, provider);
-    if (!quote.fullyCoveredByBalance && !card) return end(MSG.noCard, { release: true });
+    if (!quote.fullyCoveredByBalance) return end(MSG.noBalance, { release: true });
 
-    const action: AuthorizedAction = quote.fullyCoveredByBalance ? "CONFIRM_BALANCE" : "PAY_CARD";
-    const price = regularPriceAgorot(quote.durationMinutes, (await getRegularPricing()).hourlyAgorot);
+    const price = quote.fullPriceAgorot;
     const sandbox = provider.environment === "sandbox" ? "סביבת בדיקות, " : "";
-    const last4 = card?.last4 ? card.last4.split("").join(" ") : "";
-    // הנחת 25% להזמנה ראשונה כבר נכללת ב-quote.cashAgorot (ראו quoteHold); כאן רק מודיעים עליה בקול
-    const discountNote = quote.discountAgorot > 0 ? `, כולל הנחת 25 אחוז להזמנה ראשונה` : "";
-    const plan = quote.fullyCoveredByBalance
-      ? `יתרת השעות מכסה את כל ההזמנה וינוצלו ${spokenMinutes(quote.packageMinutes)}`
-      : quote.packageMinutes > 0
-        ? `ינוצלו ${spokenMinutes(quote.packageMinutes)} מהיתרה ויחויבו ${spokenShekel(quote.cashAgorot)} בכרטיס השמור המסתיים ב ${last4}`
-        : `יחויבו ${spokenShekel(quote.cashAgorot)} בכרטיס השמור המסתיים ב ${last4}${discountNote}`;
+    const plan = `יתרת השעות מכסה את כל ההזמנה וינוצלו ${spokenMinutes(quote.packageMinutes)}`;
 
     // 3. הצגת מחיר ויתרה ובחירה
     const choice = await call.read(
@@ -176,7 +146,7 @@ export async function runPaidBooking(
         userId: user.id,
         pin: typed,
         appointmentId: hold.id,
-        action,
+        action: "CONFIRM_BALANCE",
         amountAgorot: quote.cashAgorot,
         packageMinutes: quote.packageMinutes,
       });

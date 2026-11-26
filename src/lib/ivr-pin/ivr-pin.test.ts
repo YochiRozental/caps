@@ -334,10 +334,9 @@ describe("קוד טלפוני: שירות, הגבלת ניסיונות והעב�
     assert.deepEqual(await legacy.migrateLegacyPhonePins(prisma, { apply: true }), { candidates: 0, migrated: 0 });
   });
 
-  test("הקריטריון המבני לא תופס: משתמש עם ת\"ז, מגדר, כרטיס, אימייל או תפקיד מנהל", async () => {
+  test("הקריטריון המבני לא תופס: משתמש עם ת\"ז, מגדר, אימייל או תפקיד מנהל", async () => {
     await mkUser("hasId", { phone: "0501110004", idNumber: "000000018", passwordHash: "x" });
     await mkUser("hasGender", { phone: "0501110005", gender: "MALE", passwordHash: "x" });
-    await mkUser("hasCard", { phone: "0501110006", cardLast4: "4242", passwordHash: "x" });
     await mkUser("hasEmail", { phone: "0501110007", email: "pin-email@test.local", passwordHash: "x" });
     await mkUser("adminRole", { phone: "0501110008", role: "ADMIN", passwordHash: "x" });
     await mkUser("noPhone", { passwordHash: "x" });

@@ -44,7 +44,7 @@ export async function POST(request: Request) {
   const unavailable = paymentUnavailableProblem();
   if (unavailable) return paymentUnavailableResponse(unavailable);
   // כשזרימת התשלום פעילה, הזמנה ישירה בלי החזקה ותשלום חסומה (אחרת אפשר לעקוף את התשלום בקריאת API ישירה)
-  if (isPaymentFlowRequiredFor(user)) {
+  if (isPaymentFlowRequiredFor()) {
     return NextResponse.json(
       { error: "ההזמנה מתבצעת דרך מסך התשלום", code: "PAYMENT_REQUIRED" },
       { status: 409 },

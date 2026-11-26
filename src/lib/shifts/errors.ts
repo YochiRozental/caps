@@ -3,9 +3,7 @@ export type ShiftErrorCode =
   | "FORBIDDEN"
   | "INVALID"
   | "CONFLICT"
-  | "NO_PAYMENT_METHOD"
-  | "BLOCKED"
-  | "INVALID_PASSWORD";
+  | "BLOCKED";
 
 export interface ShiftConflict {
   /** YYYY-MM-DD, או ריק כשהבעיה כללית */

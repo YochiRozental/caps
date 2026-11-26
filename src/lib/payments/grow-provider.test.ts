@@ -6,7 +6,6 @@ import {
   GrowPaymentProvider,
   agorotToShekels,
   assertFullName,
-  deriveUniqueIdentifier,
   normalizeIsraeliPhone,
   shekelsToAgorot,
 } from "@/lib/payments/grow-provider";
@@ -72,15 +71,6 @@ test("agorotToShekels/shekelsToAgorot: המרה דו-כיוונית, דוחה ס
   assert.equal(shekelsToAgorot(undefined), 0);
   assert.throws(() => agorotToShekels(0));
   assert.throws(() => agorotToShekels(1.5));
-});
-
-test("deriveUniqueIdentifier: דטרמיניסטי ובטווח בטוח", () => {
-  const a = deriveUniqueIdentifier("shiftcharge:x:2026-01:a1");
-  const b = deriveUniqueIdentifier("shiftcharge:x:2026-01:a1");
-  const c = deriveUniqueIdentifier("shiftcharge:x:2026-01:a2");
-  assert.equal(a, b);
-  assert.notEqual(a, c);
-  assert.ok(Number.isSafeInteger(a) && a >= 0 && a < 1_000_000_000);
 });
 
 test("normalizeIsraeliPhone: מקבל 0.../972.../+972..., דוחה לא תקין", () => {
@@ -227,8 +217,8 @@ test("createPaymentRequest: מסרב לקרוא ל-Grow בלי טלפון/שם �
 
 // ───────────────────────────── getPaymentStatus: מיפוי קודי סטטוס (parameter-mapping) ─────────────────────────────
 
-test("getPaymentStatus (process ref): 2=שולם -> SUCCEEDED, וטוקן נחשף רק בהסכמה מפורשת", async () => {
-  const withConsent = makeProvider({
+test("getPaymentStatus (process ref): 2=שולם -> SUCCEEDED, וטוקן שמוחזר מ-Grow לעולם לא נקרא או נחשף (אין כרטיס שמור)", async () => {
+  const p = makeProvider({
     createPaymentProcess: () => OK_PROCESS,
     getPaymentProcessInfo: () => ({
       status: "1",
@@ -236,23 +226,12 @@ test("getPaymentStatus (process ref): 2=שולם -> SUCCEEDED, וטוקן נחש
       data: { transactions: [{ statusCode: "2", sum: "15.50", cardToken: "ctok", cardSuffix: "1234", cardBrand: "Visa", cardExp: "1230" }] },
     }),
   });
-  const created = await withConsent.createPaymentRequest({ ...baseCreate, amountAgorot: 1550, savePaymentMethod: true, idempotencyKey: "k4" });
-  const status = await withConsent.getPaymentStatus(created.providerPaymentId);
+  const created = await p.createPaymentRequest({ ...baseCreate, amountAgorot: 1550, idempotencyKey: "k4" });
+  const status = await p.getPaymentStatus(created.providerPaymentId);
   assert.equal(status.status, "SUCCEEDED");
   assert.equal(status.amountAgorot, 1550);
-  assert.equal(status.savedPaymentMethod?.token, "ctok");
-  assert.equal(status.savedPaymentMethod?.expiry, "12/30");
-});
-
-test("getPaymentStatus (process ref): בלי savePaymentMethod=true ביצירה, לעולם לא נחשף טוקן - גם אם Grow מחזיר cardToken", async () => {
-  const noConsent = makeProvider({
-    createPaymentProcess: () => OK_PROCESS,
-    getPaymentProcessInfo: () => ({ status: "1", err: "", data: { transactions: [{ statusCode: "2", sum: "15.50", cardToken: "ctok" }] } }),
-  });
-  const created = await noConsent.createPaymentRequest({ ...baseCreate, idempotencyKey: "k4b" });
-  const status = await noConsent.getPaymentStatus(created.providerPaymentId);
-  assert.equal(status.status, "SUCCEEDED");
-  assert.equal(status.savedPaymentMethod, undefined);
+  const dump = JSON.stringify(status);
+  for (const leaked of ["ctok", "1234", "Visa", "1230", "12/30"]) assert.ok(!dump.includes(leaked), `נחשף ${leaked}`);
 });
 
 test("getPaymentStatus (process ref): 9=נדחתה -> FAILED, 4=בוטלה לפני שידור -> CANCELLED", async () => {
@@ -310,62 +289,6 @@ test("getPaymentStatus (process ref): סכום ההחזר מחושב משורו�
   assert.equal(status.refundedAgorot, 500);
 });
 
-// ───────────────────────────── chargeSavedMethod ─────────────────────────────
-
-const baseCharge = { token: "tok-abc", amountAgorot: 2000, currency: "ILS" as const, description: "charge", customerRef: "u1" };
-
-test("chargeSavedMethod: הצלחה ממופה לעסקה (tx ref)", async () => {
-  const p = makeProvider({
-    getTokenTransactionsByExternalIdentifiers: () => ({ status: "0", err: { id: "404", message: "not found" } }),
-    createTransactionWithToken: (form) => {
-      assert.equal(form.get("cardToken"), "tok-abc");
-      assert.equal(form.get("paymentType"), "2");
-      assert.ok(form.get("transactionUniqueIdentifier"));
-      return { status: "1", err: "", data: { transactionId: "tx1", transactionToken: "tt1" } };
-    },
-  });
-  const res = await p.chargeSavedMethod({ ...baseCharge, idempotencyKey: "charge-1" });
-  assert.equal(res.status, "SUCCEEDED");
-});
-
-test("chargeSavedMethod: דחייה מ-Grow היא FAILED ודאי, לא UNKNOWN - ואין צורך בקריאה נוספת כדי לדעת זאת", async () => {
-  const p = makeProvider({
-    getTokenTransactionsByExternalIdentifiers: () => ({ status: "0", err: "" }),
-    createTransactionWithToken: () => ({ status: "0", err: { id: "210", message: "card declined" } }),
-  });
-  const res = await p.chargeSavedMethod({ ...baseCharge, idempotencyKey: "charge-2" });
-  assert.equal(res.status, "FAILED");
-  assert.ok(res.failureCode?.includes("210"));
-  const status = await p.getPaymentStatus(res.providerPaymentId);
-  assert.equal(status.status, "FAILED");
-});
-
-test("chargeSavedMethod: אם חיוב עם אותו מזהה ייחודי כבר קיים ב-Grow, מחזירים אותו ולא מחייבים שוב", async () => {
-  let chargeCalls = 0;
-  const p = makeProvider({
-    getTokenTransactionsByExternalIdentifiers: () => ({
-      status: "1",
-      err: "",
-      data: { transactions: [{ transactionId: "tx-old", transactionToken: "tt-old", statusCode: "2" }] },
-    }),
-    createTransactionWithToken: () => {
-      chargeCalls++;
-      return { status: "1", err: "", data: { transactionId: "tx-new", transactionToken: "tt-new" } };
-    },
-  });
-  const res = await p.chargeSavedMethod({ ...baseCharge, idempotencyKey: "charge-3" });
-  assert.equal(chargeCalls, 0);
-  assert.equal(res.status, "SUCCEEDED");
-});
-
-test("chargeSavedMethod: status=1 אך data.statusCode שונה מ-2 ('שולם', token-transactions-response) - לא הצלחה אוטומטית", async () => {
-  const p = makeProvider({
-    getTokenTransactionsByExternalIdentifiers: () => ({ status: "0", err: "" }),
-    createTransactionWithToken: () => ({ status: "1", err: "", data: { transactionId: "tx1", transactionToken: "tt1", statusCode: "9" } }),
-  });
-  await assert.rejects(() => p.chargeSavedMethod({ ...baseCharge, idempotencyKey: "mismatch-1" }), PaymentError);
-});
-
 // ───────────────────────────── cancelPayment ─────────────────────────────
 
 test("cancelPayment: no-op כשאין עדיין עסקה מוצלחת אצל Grow", async () => {
@@ -388,10 +311,8 @@ test("cancelPayment: נכשל אם Grow כבר קלט תשלום מוצלח", as
 
 // ───────────────────────────── refund (refund-overview: אותו יום = בלי חלקי; מקסימום 2 דרך ה-API) ─────────────────────────────
 
-test("refund: tx ref מחזיר ישירות (עסקה לא מאותו יום בדוגמה - paymentDate לא קיים ב-createTransactionWithToken)", async () => {
+test("refund: מזהה tx ישן (מלפני הסרת חיוב הטוקן) עדיין מתפענח ומוחזר ישירות", async () => {
   const p = makeProvider({
-    getTokenTransactionsByExternalIdentifiers: () => ({ status: "0", err: "" }),
-    createTransactionWithToken: () => ({ status: "1", err: "", data: { transactionId: "tx1", transactionToken: "tt1" } }),
     getTransactionInfo: () => ({ status: "1", err: "", data: { sum: "5.00" } }),
     refundTransaction: (form) => {
       assert.equal(form.get("transactionId"), "tx1");
@@ -399,8 +320,7 @@ test("refund: tx ref מחזיר ישירות (עסקה לא מאותו יום ב
       return { status: "1", err: "", data: { refundedTransactionId: "tx1" } };
     },
   });
-  const charge = await p.chargeSavedMethod({ ...baseCharge, amountAgorot: 500, idempotencyKey: "c1" });
-  const refund = await p.refund({ providerPaymentId: charge.providerPaymentId, amountAgorot: 500, idempotencyKey: "r1" });
+  const refund = await p.refund({ providerPaymentId: "grow:tx:tx1:tt1", amountAgorot: 500, idempotencyKey: "r1" });
   assert.equal(refund.status, "SUCCEEDED");
   assert.equal(refund.amountAgorot, 500);
 });
@@ -587,18 +507,4 @@ test("parseWebhook: asmachta חסר - מדלגים על approveTransaction בל�
 test("parseWebhook: גוף שלא ניתן לפענח או שחסרים בו שדות מזהים נדחה כחתימה לא תקינה", async () => {
   const p = makeProvider({});
   await assert.rejects(() => p.parseWebhook({ rawBody: JSON.stringify({ status: "1", err: "", data: { foo: "bar" } }), headers: {} }), WebhookVerificationError);
-});
-
-test("parseWebhook: אין approveTransaction לחיובי טוקן - chargeSavedMethod לא עובר דרך parseWebhook כלל", async () => {
-  // זהו תיעוד-בדיקה של ההנחיה (לא טעינת פונקציונליות חדשה): chargeSavedMethod מחזיר תוצאה סינכרונית
-  // ישירות מ-createTransactionWithToken, ואינו קורא בשום מקום ל-parseWebhook/approveTransaction.
-  const p = makeProvider({
-    getTokenTransactionsByExternalIdentifiers: () => ({ status: "0", err: "" }),
-    createTransactionWithToken: () => ({ status: "1", err: "", data: { transactionId: "tx1", transactionToken: "tt1" } }),
-    approveTransaction: () => {
-      throw new Error("approveTransaction must never be called for a token charge");
-    },
-  });
-  const res = await p.chargeSavedMethod({ ...baseCharge, idempotencyKey: "no-approve-1" });
-  assert.equal(res.status, "SUCCEEDED");
 });

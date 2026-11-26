@@ -1,7 +1,5 @@
 import type { PrismaClient, Prisma } from "@/generated/prisma/client";
 import { prisma as defaultDb } from "@/lib/prisma";
-import type { PaymentProvider } from "@/lib/payments/provider";
-import { findUsableCard } from "@/lib/payments/saved-methods";
 import { billingDueDates, billingMonths } from "@/lib/shifts/calendar";
 import { jerusalemTodayIso } from "@/lib/jerusalem-time";
 
@@ -30,7 +28,6 @@ export interface ShiftChargeView {
   amountAgorot: number;
   occurrenceCount: number;
   status: string;
-  attempt: number;
   paidAt: string | null;
   failureCode: string | null;
   graceUntil: string | null;
@@ -117,8 +114,6 @@ export interface ShiftView {
   monthlyPriceAgorot: number;
   /** סך שלושת החיובים (המחיר החודשי × 3). 0 במשמרת ישנה */
   totalAgorot: number;
-  /** AUTO = חיוב אוטומטי באמצעי תשלום שמור; MANUAL = תשלום ידני בתיאום מנהל */
-  paymentMode: "AUTO" | "MANUAL";
   /** זכאויות לשעה חלופית שעוד לא תואמו (סגירה ביוזמת ההנהלה) */
   /** שעות חלופיות שעדיין ניתנות למימוש (יתרה בתוקף) או שטרם ניתן להן זיכוי */
   makeupOwed: number;
@@ -201,7 +196,6 @@ export function toShiftView(shift: ShiftWithAll, now: Date, credits: Map<string,
     occurrencePriceAgorot: shift.occurrencePriceAgorot,
     monthlyPriceAgorot: shift.monthlyPriceAgorot,
     totalAgorot: shift.monthlyPriceAgorot * 3,
-    paymentMode: shift.paymentMode,
     makeupOwed: makeups.filter((m) => m.state === "OPEN" || m.state === "PENDING_GRANT").length,
     makeupMinutesRemaining: makeups.filter((m) => m.state === "OPEN").reduce((n, m) => n + m.minutesRemaining, 0),
     makeups,
@@ -227,7 +221,6 @@ export function toShiftView(shift: ShiftWithAll, now: Date, credits: Map<string,
         amountAgorot: c.amountAgorot,
         occurrenceCount: c.occurrenceCount,
         status: c.status,
-        attempt: c.attempt,
         paidAt: iso(c.paidAt),
         failureCode: c.failureCode,
         graceUntil: iso(c.graceUntil),
@@ -244,24 +237,21 @@ const include = { room: true, occurrences: true, charges: true, requests: true }
 
 export interface MyShiftsView {
   serverNow: string;
-  /** זכאות להזמנת משמרת חדשה: אישור מנהל + חשבון מאושר. נבדקת שוב בשרת בכל יצירה */
+  /** זכאות למשמרת קבועה: אישור מנהל + חשבון מאושר. המשמרת עצמה נקבעת ע"י ההנהלה (אין הזמנה עצמית) */
   eligible: boolean;
-  hasUsableCard: boolean;
   shifts: ShiftView[];
 }
 
-export async function getMyShifts(params: { userId: string; provider: PaymentProvider | null; now?: Date; db?: PrismaClient }): Promise<MyShiftsView> {
-  const { userId, provider, now = new Date(), db = defaultDb } = params;
+export async function getMyShifts(params: { userId: string; now?: Date; db?: PrismaClient }): Promise<MyShiftsView> {
+  const { userId, now = new Date(), db = defaultDb } = params;
   const [user, shifts] = await Promise.all([
     db.user.findUnique({ where: { id: userId }, select: { canBookShifts: true, status: true, role: true } }),
     db.shift.findMany({ where: { userId }, include, orderBy: { createdAt: "desc" }, take: 50 }),
   ]);
-  const card = provider ? await findUsableCard(userId, provider, db) : null;
   const credits = await loadMakeupCredits(db, shifts);
   return {
     serverNow: now.toISOString(),
     eligible: !!user && user.role === "CLIENT" && user.status === "APPROVED" && user.canBookShifts,
-    hasUsableCard: !!card,
     shifts: shifts.map((s) => toShiftView(s, now, credits)),
   };
 }
@@ -282,7 +272,6 @@ export interface AdminShiftRow {
   unpaidCharges: number;
   unknownCharges: number;
   makeupOwed: number;
-  paymentMode: "AUTO" | "MANUAL";
   hasOpenRequest: boolean;
 }
 
@@ -323,7 +312,6 @@ export async function listShiftsAdmin(filters: AdminShiftFilters = {}, db: Prism
     unpaidCharges: s.charges.filter((c) => (c.status === "FAILED" || c.status === "PENDING") && (c.dueDate === null || c.dueDate <= jerusalemTodayIso(now))).length,
     // שעות חלופיות עם יתרה פתוחה (או שטרם ניתן להן זיכוי)
     makeupOwed: s.occurrences.filter((o) => o.makeupStatus !== null).map((o) => makeupViewOf(o, credits, now)).filter((m) => m.state === "OPEN" || m.state === "PENDING_GRANT").length,
-    paymentMode: s.paymentMode,
     unknownCharges: s.charges.filter((c) => c.status === "UNKNOWN").length,
     hasOpenRequest: s.requests.length > 0,
   }));

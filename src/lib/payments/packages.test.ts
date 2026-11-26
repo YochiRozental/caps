@@ -39,7 +39,7 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
   let pricing: typeof import("@/lib/payments/pricing");
   let pricingDb: typeof import("@/lib/payments/pricing-db");
   let policy: typeof import("@/lib/payments/policy");
-  let MockPaymentProvider: typeof import("@/lib/payments/mock-provider").MockPaymentProvider;
+  let MockPaymentProvider: typeof import("@/lib/payments/testing/mock-provider").MockPaymentProvider;
   let PrismaMockStore: typeof import("@/lib/payments/mock-store").PrismaMockStore;
 
   let provider: InstanceType<typeof MockPaymentProvider>;
@@ -88,7 +88,7 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
     pricing = await import("@/lib/payments/pricing");
     pricingDb = await import("@/lib/payments/pricing-db");
     policy = await import("@/lib/payments/policy");
-    ({ MockPaymentProvider } = await import("@/lib/payments/mock-provider"));
+    ({ MockPaymentProvider } = await import("@/lib/payments/testing/mock-provider"));
     ({ PrismaMockStore } = await import("@/lib/payments/mock-store"));
     const { jerusalemParts } = await import("@/lib/opening-hours");
 
@@ -457,7 +457,7 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
     // המנהל משנה את מחיר כרטיסיית 5 השעות תוך כדי שהתשלום כבר פתוח ואושר אצל הספק
     await pricingDb.saveRegularPricing({
       adminId,
-      input: { hourlyAgorot: HOURLY_AGOROT, package5Agorot: 99900, package10Agorot: 55000, package20Agorot: 100000 },
+      input: { hourlyAgorot: HOURLY_AGOROT, package5Agorot: 99900, package10Agorot: 55000, package20Agorot: 100000, workshopHourlyAgorot: HOURLY_AGOROT * 2, workshopPackage5Agorot: 60000, workshopPackage10Agorot: 110000, workshopPackage20Agorot: 200000 },
     });
 
     const res = await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider });
@@ -474,8 +474,83 @@ describe("חבילות שעות, יתרות ותשלום משולב: מול Post
     // משחזרים את הקטלוג כדי לא להשפיע על בדיקות אחרות באותו קובץ (הטבלה גלובלית ואינה מתאפסת ב-wipe לכל בדיקה)
     await pricingDb.saveRegularPricing({
       adminId,
-      input: { hourlyAgorot: HOURLY_AGOROT, package5Agorot: before5, package10Agorot: 55000, package20Agorot: 100000 },
+      input: { hourlyAgorot: HOURLY_AGOROT, package5Agorot: before5, package10Agorot: 55000, package20Agorot: 100000, workshopHourlyAgorot: HOURLY_AGOROT * 2, workshopPackage5Agorot: 60000, workshopPackage10Agorot: 110000, workshopPackage20Agorot: 200000 },
     });
+  });
+
+  // ───────────── חדר סדנאות: מחיר כפול וכרטיסיות נפרדות ─────────────
+
+  test("חדר סדנאות: הצעת מחיר בכפול מחדר רגיל, וכרטיסיית 5/10/20 שעות בסדנאות היא כפולה מהרגילה", async () => {
+    const regularHold = await hold(userA, "ROOM3", 9);
+    const workshopHold = await hold(userA, "WORKSHOP", 11);
+    const rq = await svc.quoteHold({ appointmentId: regularHold.id, userId: userA, useBalance: false });
+    const wq = await svc.quoteHold({ appointmentId: workshopHold.id, userId: userA, useBalance: false });
+    assert.equal(rq.cashAgorot, HOURLY_AGOROT);
+    assert.equal(wq.cashAgorot, 2 * HOURLY_AGOROT);
+    assert.equal(wq.fullPriceAgorot, 2 * rq.fullPriceAgorot);
+
+    const p = await pricingDb.getRegularPricing();
+    assert.deepEqual(
+      pricingDb.workshopHoursPackageOptions(p).map((o: { hours: number; priceAgorot: number }) => [o.hours, o.priceAgorot]),
+      pricingDb.hoursPackageOptions(p).map((o: { hours: number; priceAgorot: number }) => [o.hours, o.priceAgorot * 2])
+    );
+  });
+
+  test("רכישת כרטיסיית סדנאות: משולמת במחיר הכפול ויוצרת כרטיסייה מסומנת, ללא השפעה על כרטיסייה רגילה", async () => {
+    const started = await pkgs.startPackagePurchase({ userId: userA, hours: 5, workshop: true, clientKey: nextKey(), provider });
+    assert.equal(started.workshop, true);
+    assert.equal(started.amountAgorot, 2 * HOURS_PACKAGES.find((p) => p.hours === 5)!.priceAgorot);
+    await provider.completeCheckout(started.providerPaymentId!, "success");
+    const res = await pkgs.finalizePackagePayment({ paymentId: started.paymentId, provider });
+    assert.equal(res.outcome, "PACKAGE_ACTIVATED");
+    const pkg = await prisma.hoursPackage.findUniqueOrThrow({ where: { id: res.packageId } });
+    assert.deepEqual([pkg.workshop, pkg.hours, pkg.minutesRemaining, pkg.pricePaidAgorot], [true, 5, 300, started.amountAgorot]);
+
+    const regular = await buy(userA, 5);
+    const regularPkg = await prisma.hoursPackage.findUniqueOrThrow({ where: { id: regular.res.packageId } });
+    assert.equal(regularPkg.workshop, false);
+    assert.equal(regularPkg.pricePaidAgorot * 2, pkg.pricePaidAgorot);
+  });
+
+  test("יתרות לא חוצות סוגים: כרטיסיית סדנאות לא מכסה חדר רגיל, וכרטיסייה רגילה לא מכסה חדר סדנאות", async () => {
+    await prisma.hoursPackage.create({
+      data: { userId: userA, hours: 5, workshop: true, pricePaidAgorot: 60000, minutesTotal: 300, minutesRemaining: 300, expiresAt: new Date(Date.now() + 365 * DAY) },
+    });
+    const regularHold = await hold(userA, "ROOM3", 9);
+    const q1 = await svc.quoteHold({ appointmentId: regularHold.id, userId: userA });
+    assert.deepEqual([q1.packageMinutes, q1.cashAgorot], [0, HOURLY_AGOROT], "כרטיסיית סדנאות אינה מנוצלת בחדר רגיל");
+    await assert.rejects(() => confirmFromBalance(userA, regularHold.id), { code: "INSUFFICIENT_BALANCE" });
+
+    const workshopHold = await hold(userA, "WORKSHOP", 11);
+    const q2 = await svc.quoteHold({ appointmentId: workshopHold.id, userId: userA });
+    assert.deepEqual([q2.packageMinutes, q2.cashAgorot, q2.fullyCoveredByBalance], [60, 0, true]);
+    await confirmFromBalance(userA, workshopHold.id);
+    assert.equal(await remaining(userA), 240);
+
+    // והפוך: יתרה רגילה בלבד לא מכסה חדר סדנאות
+    await wipe();
+    await seedPackage(userB, 300);
+    const wh = await hold(userB, "WORKSHOP", 13);
+    const q3 = await svc.quoteHold({ appointmentId: wh.id, userId: userB });
+    assert.deepEqual([q3.packageMinutes, q3.cashAgorot], [0, 2 * HOURLY_AGOROT]);
+    await assert.rejects(() => confirmFromBalance(userB, wh.id), { code: "INSUFFICIENT_BALANCE" });
+  });
+
+  test("ביטול הזמנת סדנאות שנוצלה מכרטיסייה שפגה יוצר זיכוי סדנאות (לא זיכוי רגיל)", async () => {
+    const expiringSoon = new Date(Date.now() + 2 * 3_600_000);
+    await prisma.hoursPackage.create({
+      data: { userId: userA, hours: 5, workshop: true, pricePaidAgorot: 60000, minutesTotal: 300, minutesRemaining: 300, expiresAt: expiringSoon },
+    });
+    const h = await hold(userA, "WORKSHOP", 11);
+    await confirmFromBalance(userA, h.id);
+    const after = new Date(expiringSoon.getTime() + 3_600_000);
+    await prisma.$transaction(async (tx: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      await (await import("@/lib/payments/shared")).lockUserBalances(tx, userA);
+      await bal.restoreAppointmentBalance(tx, { userId: userA, appointmentId: h.id, now: after });
+    });
+    const credit = await prisma.credit.findFirstOrThrow({ where: { userId: userA } });
+    assert.equal(credit.workshop, true);
+    assert.equal(credit.minutesRemaining, 60);
   });
 
   // ───────────── ניצול יתרות ─────────────

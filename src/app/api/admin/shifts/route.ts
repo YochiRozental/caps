@@ -25,13 +25,12 @@ export async function GET(request: Request) {
 }
 
 /**
- * יצירת משמרת עבור לקוח ע"י מנהל, כולל מסלול תשלום ידני (paymentMode = MANUAL): בלי אמצעי תשלום שמור ובלי חיוב אוטומטי,
- * והמנהל מתעד כל תשלום שהתקבל. הלקוח חייב להיות זכאי (אישור זכאות נבדק בשרת). בדיקות התנגשות, שעות פעילות ומסלול זהות
- * להזמנה רגילה. אידמפוטנטי לפי clientKey.
+ * יצירת משמרת עבור לקוח ע"י מנהל, בתשלום ידני: אין כרטיס שמור ואין חיוב אוטומטי, והמנהל מתעד כל תשלום שהתקבל.
+ * הלקוח חייב להיות זכאי (אישור זכאות נבדק בשרת). בדיקות התנגשות, שעות פעילות ומסלול זהות להזמנה רגילה.
+ * אידמפוטנטי לפי clientKey.
  */
 export async function POST(request: Request) {
-  const provider = gateProvider();
-  if (!provider) return notFound();
+  if (!gateProvider()) return notFound();
   const blocked = mutationGuard(request);
   if (blocked) return blocked;
   const admin = await requireAdminUser();
@@ -43,12 +42,11 @@ export async function POST(request: Request) {
   const windowId = str(body?.windowId);
   const startDate = str(body?.startDate);
   const clientKey = str(body?.clientKey);
-  const paymentMode = body?.paymentMode === "MANUAL" ? "MANUAL" : body?.paymentMode === "AUTO" ? "AUTO" : undefined;
-  if (!userId || !roomKey || weekday === undefined || !windowId || !startDate || !clientKey || !paymentMode) {
+  if (!userId || !roomKey || weekday === undefined || !windowId || !startDate || !clientKey) {
     return NextResponse.json({ error: "חסרים פרטים ליצירת המשמרת" }, { status: 400 });
   }
   try {
-    const result = await createShift({ userId, roomKey, weekday, windowId, startDate, clientKey, provider, createdById: admin.user.id, paymentMode });
+    const result = await createShift({ userId, roomKey, weekday, windowId, startDate, clientKey, createdById: admin.user.id });
     return NextResponse.json(result, { status: result.status === "ACTIVE" ? 201 : result.status === "PENDING_REVIEW" ? 202 : 402 });
   } catch (err) {
     return shiftErrorResponse(err);

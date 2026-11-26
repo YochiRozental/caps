@@ -1,18 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { Alert, EmptyState, Icon, Loading, SectionTitle } from "@/components/ui";
+import { useCallback, useEffect, useState } from "react";
+import { Alert, EmptyState, Loading, SectionTitle } from "@/components/ui";
 import { Dialog, ToneBadge, jerusalemTime } from "@/components/shifts/bits";
 import { api, shekel, useSingleFlight } from "@/lib/payments/client";
 import { ROOM_KEYS, ROOM_LABELS } from "@/lib/rooms";
 import { todayIsoDate } from "@/lib/slots";
-import { weekdayOf } from "@/lib/shifts/calendar";
 import { ShiftPriceTable } from "@/components/shifts/price-table";
 import { windowLabelOf, type ShiftWindowDef } from "@/lib/shifts/windows";
 import {
   CHARGE_STATUS_TEXT,
-  OCCURRENCE_STATUS_TEXT,
   REQUEST_KIND_TEXT,
   REQUEST_STATUS_TEXT,
   SHIFT_STATUS_TEXT,
@@ -27,28 +24,7 @@ import {
 } from "@/lib/shifts/labels";
 import type { MyShiftsView, ShiftView } from "@/lib/shifts/views";
 
-interface PreviewOccurrence {
-  date: string;
-  month: string;
-  startTime: string;
-  endTime: string;
-  priceAgorot: number;
-  skipReason: string | null;
-}
-interface Preview {
-  startDate: string;
-  endDate: string;
-  monthlyPriceAgorot: number;
-  totalAgorot: number;
-  firstChargeAgorot: number;
-  months: { month: string; dueDate: string; count: number; amountAgorot: number; isFirst: boolean }[];
-  conflicts: { date: string; reason: string }[];
-  occurrences: PreviewOccurrence[];
-}
-
-const newKey = () => globalThis.crypto.randomUUID().replace(/-/g, "");
-
-export function ShiftsCenter({ mockCardLink, windows }: { mockCardLink: boolean; windows: ShiftWindowDef[] }) {
+export function ShiftsCenter({ windows }: { windows: ShiftWindowDef[] }) {
   const [data, setData] = useState<MyShiftsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -87,21 +63,16 @@ export function ShiftsCenter({ mockCardLink, windows }: { mockCardLink: boolean;
       <ShiftPriceTable windows={windows} />
 
       <section className="space-y-4">
-        <SectionTitle hint="משמרת קבועה: אותו חדר, אותו יום ואותה משבצת, לשלושה חודשים קלנדריים לפחות">הזמנת משמרת חדשה</SectionTitle>
+        <SectionTitle hint="משמרת קבועה: אותו חדר, אותו יום ואותה משבצת, לשלושה חודשים קלנדריים לפחות">משמרת חדשה</SectionTitle>
         {!data.eligible ? (
           <p className="card p-5 text-sm text-stone-600" data-testid="not-eligible">
-            הזמנת משמרות קבועות זמינה ללקוחות שאושרו לכך על ידי ההנהלה. לבקשת אישור אפשר לפנות אלינו.
+            משמרות קבועות זמינות ללקוחות שאושרו לכך על ידי ההנהלה. לבקשת אישור אפשר לפנות אלינו.
           </p>
         ) : (
-          <NewShift
-            windows={windows}
-            hasCard={data.hasUsableCard}
-            mockCardLink={mockCardLink}
-            onCreated={(message) => {
-              setNotice(message);
-              void load();
-            }}
-          />
+          <p className="card p-5 text-sm text-stone-600" data-testid="new-shift-contact">
+            משמרת קבועה נקבעת בתיאום עם ההנהלה. לקביעת משמרת חדשה פנו אלינו, ונשבץ אותה עבורכם. התשלום החודשי מתבצע
+            בתיאום עם ההנהלה.
+          </p>
         )}
       </section>
     </div>
@@ -129,7 +100,7 @@ function ShiftCard({ shift, windows, onChanged, onNotice }: { shift: ShiftView; 
               ? `${shekel(shift.monthlyPriceAgorot)} לחודש, ${shekel(shift.totalAgorot)} לשלושה חודשים (כולל מע"מ)`
               : `${shekel(shift.occurrencePriceAgorot)} למופע`}
           </p>
-          {shift.paymentMode === "MANUAL" && <p className="text-xs text-stone-500 mt-1">תשלום ידני בתיאום עם ההנהלה: אין חיוב אוטומטי, ההנהלה מתעדת כל תשלום שהתקבל.</p>}
+          <p className="text-xs text-stone-500 mt-1">תשלום בתיאום עם ההנהלה: אין חיוב אוטומטי, ההנהלה מתעדת כל תשלום שהתקבל.</p>
         </div>
         <ToneBadge tone={st.tone}>{st.label}</ToneBadge>
       </div>
@@ -139,7 +110,7 @@ function ShiftCard({ shift, windows, onChanged, onNotice }: { shift: ShiftView; 
           המשמרת מושעית: {suspensionText(shift.suspensionReason)}. המשבצות שלכם נשמרות, אך אין אפשרות להשתמש במשמרת עד החלטת מנהל.
         </Alert>
       )}
-      {shift.status === "PENDING" && <p className="text-sm text-bronze-700">החיוב הראשון בבירור. המשבצות שמורות עד לאישור.</p>}
+      {shift.status === "PENDING" && <p className="text-sm text-bronze-700">התשלום הראשון ממתין לאישור ההנהלה. המשבצות שמורות עד לאישור.</p>}
       {shift.makeups.length > 0 && (
         <div className="rounded-xl bg-cream-50 ring-1 ring-cream-200 px-4 py-3 text-sm space-y-2" data-testid="makeups">
           <p className="font-semibold text-stone-800">
@@ -186,7 +157,7 @@ function ShiftCard({ shift, windows, onChanged, onNotice }: { shift: ShiftView; 
                     {cs ? (
                       <ToneBadge tone={cs.tone}>{m.manual ? "שולם (ידני)" : cs.label}</ToneBadge>
                     ) : (
-                      <span className="text-stone-400 text-xs">{shift.paymentMode === "MANUAL" ? "ממתין לתשלום" : "יחויב במועד"}</span>
+                      <span className="text-stone-400 text-xs">ממתין לתשלום</span>
                     )}
                     {m.manual && <span className="block text-xs text-stone-500">התקבל ב-{dateLabel(m.manual.paidOn)}</span>}
                     {m.failureCode && m.chargeStatus === "FAILED" && <span className="block text-xs text-red-600 mt-1">{failureText(m.failureCode)}</span>}
@@ -368,208 +339,3 @@ function RequestDialog({ shift, windows, kind, onClose, onSent }: { shift: Shift
   );
 }
 
-// ───────────────────────────── הזמנת משמרת חדשה ─────────────────────────────
-
-function NewShift({ windows, hasCard, mockCardLink, onCreated }: { windows: ShiftWindowDef[]; hasCard: boolean; mockCardLink: boolean; onCreated: (message: string) => void }) {
-  const [roomKey, setRoomKey] = useState<string>("ROOM3");
-  const [weekday, setWeekday] = useState(1);
-  const activeWindows = windows.filter((w) => w.active);
-  const [windowId, setWindowId] = useState(activeWindows[0]?.id ?? "");
-  const [startDate, setStartDate] = useState(todayIsoDate());
-  const [plan, setPlan] = useState<Preview | null>(null);
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [conflicts, setConflicts] = useState<{ date: string; reason: string }[]>([]);
-  const preview = useSingleFlight();
-  const create = useSingleFlight();
-  // מפתח אידמפוטנטיות אחד לכל "כוונת הזמנה": לחיצה כפולה או רענון חוזרים לאותה משמרת ולא ליצירה שנייה
-  const clientKey = useRef(newKey());
-
-  const reset = () => {
-    setPlan(null);
-    setConflicts([]);
-    setError(null);
-    clientKey.current = newKey();
-  };
-
-  async function doPreview() {
-    await preview.run(async () => {
-      setError(null);
-      const res = await api<Preview>("/api/shifts/preview", { body: { roomKey, weekday, windowId, startDate } });
-      if (res.ok) setPlan(res.data as Preview);
-      else {
-        setPlan(null);
-        setError(res.data.error ?? "לא ניתן לחשב תצוגה מקדימה");
-      }
-    });
-  }
-
-  async function doCreate() {
-    await create.run(async () => {
-      setError(null);
-      setConflicts([]);
-      const res = await api<{ status?: string; shiftId?: string; failureCode?: string; conflicts?: { date: string; reason: string }[] }>("/api/shifts", {
-        body: { roomKey, weekday, windowId, startDate, clientKey: clientKey.current, currentPassword: password },
-      });
-      setPassword("");
-      if (res.ok && res.data.status === "ACTIVE") {
-        reset();
-        onCreated("המשמרת אושרה והחיוב הראשון בוצע.");
-        return;
-      }
-      if (res.status === 202) {
-        reset();
-        onCreated("המשמרת נשמרה, אך מצב החיוב הראשון בבירור. המשבצות שמורות ומנהל יטפל.");
-        return;
-      }
-      if (res.data.status === "CHARGE_FAILED") {
-        setError(`החיוב הראשון נכשל${res.data.failureCode ? ` (${failureText(res.data.failureCode)})` : ""}, לכן המשמרת לא אושרה והמשבצות שוחררו.`);
-        clientKey.current = newKey();
-        return;
-      }
-      if (res.data.code === "NO_PAYMENT_METHOD") setError("יש לשמור אמצעי תשלום באזור האישי לפני הזמנת משמרת.");
-      else setError(res.data.error ?? "לא ניתן ליצור את המשמרת");
-      if (res.data.conflicts) setConflicts(res.data.conflicts);
-      if (res.data.code === "CONFLICT") clientKey.current = newKey();
-    });
-  }
-
-  const select = "field";
-  return (
-    <div className="card p-5 sm:p-6 space-y-5" data-testid="new-shift">
-      {!hasCard && (
-        <p className="rounded-xl border border-bronze-200 bg-bronze-50 px-4 py-3 text-sm text-bronze-700" data-testid="no-card">
-          כדי להזמין משמרת צריך אמצעי תשלום שמור וזמין, כי החיוב החודשי מתבצע בו.{" "}
-          {mockCardLink ? (
-            <Link href="/profile/payment-method" className="underline font-semibold">
-              לשמירת אמצעי תשלום
-            </Link>
-          ) : (
-            "יש לשמור אמצעי תשלום באזור האישי."
-          )}
-        </p>
-      )}
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4" onChange={reset}>
-        <div>
-          <label className="field-label" htmlFor="ns-room">חדר</label>
-          <select id="ns-room" className={select} value={roomKey} onChange={(e) => setRoomKey(e.target.value)}>
-            {ROOM_KEYS.map((k) => (
-              <option key={k} value={k}>{ROOM_LABELS[k]}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label" htmlFor="ns-day">יום בשבוע</label>
-          <select id="ns-day" className={select} value={weekday} onChange={(e) => setWeekday(Number(e.target.value))}>
-            {WEEKDAY_NAMES.map((n, i) => (
-              <option key={n} value={i}>{n}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label" htmlFor="ns-window">משבצת</label>
-          <select id="ns-window" className={select} value={windowId} onChange={(e) => setWindowId(e.target.value)}>
-            {activeWindows.map((w) => (
-              <option key={w.id} value={w.id}>
-                {windowLabelOf(w)} · {shekel(w.monthlyPriceAgorot)} לחודש
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="field-label" htmlFor="ns-start">תאריך התחלה</label>
-          <input id="ns-start" type="date" className={select} value={startDate} min={todayIsoDate()} onChange={(e) => setStartDate(e.target.value)} />
-          {startDate && weekdayOf(startDate) !== weekday && <p className="text-xs text-stone-400 mt-1">המופע הראשון יהיה ביום {WEEKDAY_NAMES[weekday]} הקרוב</p>}
-        </div>
-      </div>
-
-      <button type="button" className="btn btn-secondary" disabled={preview.busy || !startDate} onClick={doPreview}>
-        {preview.busy ? "מחשב..." : "תצוגה מקדימה ופירוט חיוב"}
-      </button>
-
-      {error && <Alert tone="error">{error}</Alert>}
-      {conflicts.length > 0 && <ConflictList conflicts={conflicts} />}
-
-      {plan && (
-        <div className="space-y-4" data-testid="preview">
-          {plan.conflicts.length > 0 ? (
-            <>
-              <Alert tone="error">לא ניתן להזמין משמרת בבחירה הזו. בחרו חדר, יום, משבצת או תאריך אחרים.</Alert>
-              <ConflictList conflicts={plan.conflicts} />
-            </>
-          ) : null}
-
-          <div className="rounded-xl bg-cream-50 ring-1 ring-cream-200 p-4 text-sm space-y-2">
-            <p>
-              תקופה: <strong>{dateLabel(plan.startDate)}</strong> עד <strong>{dateLabel(plan.endDate)}</strong> (שלושה חודשים, ללא חידוש אוטומטי). מחיר חודשי קבוע:{" "}
-              <strong>{shekel(plan.monthlyPriceAgorot)}</strong> (כולל מע&quot;מ), בסך הכול <strong>{shekel(plan.totalAgorot)}</strong> לשלושה חודשים.
-            </p>
-            <ul className="divide-y divide-cream-200">
-              {plan.months.map((m) => (
-                <li key={m.month} className="py-2 flex flex-wrap items-center justify-between gap-2">
-                  <span>
-                    חיוב {dateLabel(m.dueDate)}: {m.count} מפגשים בתקופה
-                  </span>
-                  <span className="tabular-nums">
-                    <strong>{shekel(m.amountAgorot)}</strong>{" "}
-                    <span className="text-xs text-stone-500">{m.isFirst ? "ייגבה מיד באישור ההזמנה" : "ייגבה אוטומטית במועדו"}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <details>
-            <summary className="cursor-pointer text-sm font-semibold text-stone-700">פירוט המופעים ({plan.occurrences.length})</summary>
-            <ul className="mt-2 text-sm text-stone-600 divide-y divide-cream-100">
-              {plan.occurrences.map((o) => (
-                <li key={o.date} className="py-1.5 flex items-center justify-between gap-2 tabular-nums">
-                  <span>
-                    {dateLabel(o.date)} · {jerusalemTime(o.startTime)}–{jerusalemTime(o.endTime)}
-                  </span>
-                  <span className="text-stone-400">{o.skipReason ? `${OCCURRENCE_STATUS_TEXT.SKIPPED_CLOSED_DAY} · שעה חלופית` : "כלול במחיר"}</span>
-                </li>
-              ))}
-            </ul>
-          </details>
-
-          <ul className="text-xs text-stone-500 space-y-1 list-disc pr-5">
-            <li>שלושה חיובים בדיוק, בסכום קבוע: הראשון מיד באישור ההזמנה (גם אם תאריך ההתחלה עתידי), והשניים הבאים חודש וחודשיים אחרי תאריך ההתחלה. אין חישוב יחסי, וכל המפגשים בתקופה כלולים במחיר.</li>
-            <li>ההזמנה מאושרת רק אחרי תשלום ראשון מוצלח. אם התשלום נכשל המשבצות משתחררות מיד.</li>
-            <li>אם חיוב נכשל, תקופת חסד של שבעה ימים. אם החוב לא הוסדר, המשמרת מושעית, המשבצות נשמרות והשימוש בה נעצר עד החלטת מנהל.</li>
-            <li>שינוי או ביטול במהלך התקופה אפשריים רק בפנייה למנהל ובאישורו. היעדרות ממפגש אינה מזכה בהחזר או בזיכוי. אם ההנהלה סוגרת את הקליניקה, תקבלו שעה חלופית.</li>
-          </ul>
-
-          {plan.conflicts.length === 0 && hasCard && (
-            <div className="space-y-3">
-              <div>
-                <label className="field-label" htmlFor="ns-password">סיסמת האתר (לאישור ההתחייבות)</label>
-                <input id="ns-password" type="password" dir="ltr" autoComplete="current-password" className="field" value={password} onChange={(e) => setPassword(e.target.value)} />
-              </div>
-              <button type="button" className="btn btn-primary w-full py-3!" disabled={create.busy || !password} onClick={doCreate}>
-                {create.busy
-                  ? "יוצר משמרת..."
-                  : `אישור והזמנה · חיוב מיידי ${shekel(plan.firstChargeAgorot)}`}
-                {!create.busy && <Icon name="arrowLeft" className="w-4 h-4" />}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ConflictList({ conflicts }: { conflicts: { date: string; reason: string }[] }) {
-  return (
-    <ul className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-4 py-3 space-y-1">
-      {conflicts.slice(0, 12).map((c) => (
-        <li key={c.date + c.reason}>
-          {c.date ? `${dateLabel(c.date)}: ` : ""}
-          {c.reason}
-        </li>
-      ))}
-      {conflicts.length > 12 && <li>ועוד {conflicts.length - 12} תאריכים</li>}
-    </ul>
-  );
-}

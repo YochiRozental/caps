@@ -6,6 +6,8 @@ export function hashPassword(password: string) {
   return bcrypt.hash(password, SALT_ROUNDS);
 }
 
-export function verifyPassword(password: string, passwordHash: string) {
+/** חשבון Google בלבד (passwordHash=null) לעולם לא עובר אימות סיסמה */
+export async function verifyPassword(password: string, passwordHash: string | null | undefined) {
+  if (!passwordHash) return false;
   return bcrypt.compare(password, passwordHash);
 }

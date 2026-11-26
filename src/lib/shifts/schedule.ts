@@ -4,8 +4,6 @@ import { blockingAppointmentWhere, lockRoomZone } from "@/lib/booking";
 import { jerusalemTodayIso } from "@/lib/jerusalem-time";
 import { hoursRejection, resolveDay } from "@/lib/opening-hours";
 import { loadWindows, trackForUser } from "@/lib/opening-hours-db";
-import type { PaymentProvider } from "@/lib/payments/provider";
-import { findUsableCard } from "@/lib/payments/saved-methods";
 import { isUniqueViolation } from "@/lib/payments/shared";
 import { CONFLICTING_ROOM_KEYS, ROOM_KEYS } from "@/lib/rooms";
 import { ensureRooms } from "@/lib/rooms-db";
@@ -21,8 +19,8 @@ import {
   SHIFT_WEEKDAYS,
 } from "@/lib/shifts/calendar";
 import { requireActiveWindow } from "@/lib/shifts/windows-db";
-import type { ShiftWindowDef } from "@/lib/shifts/windows";
-import { abortPendingShift, chargeShiftMonth, grantMakeupCredits } from "@/lib/shifts/billing";
+import { windowPriceFor, type ShiftWindowDef } from "@/lib/shifts/windows";
+import { abortPendingShift, grantMakeupCredits } from "@/lib/shifts/billing";
 import { writeAudit } from "@/lib/finance/audit";
 
 export { abortPendingShift };
@@ -67,8 +65,6 @@ export interface PlanInput {
   windowId: string;
   startDate: string;
   now?: Date;
-  /** אופן הגבייה. MANUAL רק ע"י מנהל (ראו createShift) */
-  paymentMode?: "AUTO" | "MANUAL";
   /** שינוי מאושר של משמרת קיימת רשאי להמשיך להשתמש במשבצת שהושבתה מאז (לא מזמינים אותה מחדש ללקוחות) */
   allowInactiveWindow?: boolean;
   /**
@@ -107,7 +103,9 @@ export async function planOccurrences(
   const track = await trackForUser(userId);
   if (!track) throw new ShiftError("יש להשלים מגדר בפרופיל כדי להזמין משמרת", "INVALID");
 
-  const shiftWindow = await requireActiveWindow(windowId, db, { allowInactive: allowInactiveWindow });
+  const baseWindow = await requireActiveWindow(windowId, db, { allowInactive: allowInactiveWindow });
+  // חדר סדנאות מתומחר במחיר חודשי נפרד; מכאן והלאה monthlyPriceAgorot של המשבצת הוא המחיר החל על החדר שנבחר
+  const shiftWindow: ShiftWindowDef = { ...baseWindow, monthlyPriceAgorot: windowPriceFor(baseWindow, roomKey) };
   const windows = await loadWindows();
   const conflicts: ShiftConflict[] = [];
   const occurrences: PlannedOccurrence[] = occurrenceDatesBetween(from, to, weekday).map((date) => {
@@ -205,9 +203,8 @@ export async function assertShiftEligible(userId: string, db: PrismaClient = def
 
 export type CreateShiftResult =
   | { status: "ACTIVE"; shiftId: string; firstChargeAgorot: number }
-  /** החיוב הראשון במצב לא ידוע: המשבצות שמורות וממתינות לבירור מנהל. אין חיוב חוזר אוטומטי */
+  /** משמרת ישנה (מלפני הסרת החיוב האוטומטי) שממתינה לתיעוד החיוב הראשון: מוחזרת רק בבקשה חוזרת עם אותו מפתח */
   | { status: "PENDING_REVIEW"; shiftId: string; firstChargeAgorot: number }
-  /** החיוב הראשון נכשל: המשמרת לא אושרה והמשבצות שוחררו */
   | { status: "CHARGE_FAILED"; shiftId: string; failureCode?: string };
 
 const CLIENT_KEY = /^[A-Za-z0-9_-]{8,64}$/;
@@ -219,24 +216,20 @@ function resultFor(shift: { id: string; status: string; occurrencePriceAgorot: n
 }
 
 /**
- * יוצר משמרת: זכאות, אמצעי תשלום שמיש (חיוב אוטומטי), בדיקה ויצירה אטומית של כל המופעים תחת נעילת החדר, ושלוש שורות חיוב.
- * החיוב הראשון מתבצע מיד באישור ההזמנה, גם כשתאריך ההתחלה עתידי, והמשמרת מאושרת סופית רק אחרי חיוב ראשון מוצלח. כישלון ודאי
- * משחרר את המשבצות מיד. מצב לא ידוע משאיר אותן שמורות לזמן מוגבל בלבד (PENDING_SHIFT_MAX_HOLD_MS), ואז הריצה היומית מאמתת מול
- * הספק או משחררת (expireStalePendingShifts). החיוב השני והשלישי: חודש וחודשיים אחרי תאריך ההתחלה.
- * תשלום ידני (MANUAL, רק ע"י מנהל עבור לקוח זכאי): באישור המפורש של המנהל המשמרת מאושרת בלי חיוב אוטומטי; המנהל מתעד כל תשלום.
+ * יוצר משמרת ע"י מנהל עבור לקוח זכאי: בדיקה ויצירה אטומית של כל המופעים תחת נעילת החדר, ושלוש שורות חיוב ממתינות.
+ * אין כרטיס שמור ואין חיוב אוטומטי: כל משמרת מנוהלת בתשלום ידני, והמנהל מתעד כל תשלום שהתקבל (recordManualPayment).
+ * המשמרת מאושרת מיד באישור המנהל. החיוב הראשון מועדו היום, השני והשלישי חודש וחודשיים אחרי תאריך ההתחלה.
  * אידמפוטנטי לפי clientKey (לחיצה כפולה/רענון מחזירים את אותה משמרת).
  */
 export async function createShift(
-  params: PlanInput & { clientKey: string; provider: PaymentProvider; createdById?: string; db?: PrismaClient }
+  params: PlanInput & { clientKey: string; createdById: string; db?: PrismaClient }
 ): Promise<CreateShiftResult> {
-  const { userId, roomKey, weekday, windowId, startDate, clientKey, provider, createdById = userId, paymentMode = "AUTO", now = new Date(), db = defaultDb } = params;
+  const { userId, roomKey, weekday, windowId, startDate, clientKey, createdById, now = new Date(), db = defaultDb } = params;
 
   await assertShiftEligible(userId, db);
-  // תשלום ידני נקבע בתיאום עם מנהל בלבד: לקוח אינו רשאי לבחור בו בעצמו (נבדק מול המסד, לא מול הבקשה)
-  if (paymentMode === "MANUAL") {
-    const actor = await db.user.findUnique({ where: { id: createdById }, select: { role: true } });
-    if (actor?.role !== "ADMIN") throw new ShiftError("תשלום ידני נקבע על ידי מנהל בלבד", "FORBIDDEN");
-  }
+  // משמרת נקבעת בתיאום עם מנהל בלבד: לקוח אינו רשאי ליצור אותה בעצמו (נבדק מול המסד, לא מול הבקשה)
+  const actor = await db.user.findUnique({ where: { id: createdById }, select: { role: true } });
+  if (actor?.role !== "ADMIN") throw new ShiftError("משמרת קבועה נקבעת על ידי מנהל בלבד", "FORBIDDEN");
   if (!CLIENT_KEY.test(clientKey)) throw new ShiftError("מפתח הבקשה אינו תקין", "INVALID");
   const idempotencyKey = `shift:${userId}:${clientKey}`;
 
@@ -248,11 +241,6 @@ export async function createShift(
 
   const openShifts = await db.shift.count({ where: { userId, status: { in: ["PENDING", "ACTIVE", "SUSPENDED"] } } });
   if (openShifts >= MAX_OPEN_SHIFTS_PER_USER) throw new ShiftError("הגעת למספר המשמרות המרבי", "CONFLICT");
-
-  // חיוב אוטומטי: אין לאשר משמרת בלי אמצעי תשלום שמיש. בודקים לפני שנועלים משבצות
-  const card = paymentMode === "AUTO" ? await findUsableCard(userId, provider, db) : null;
-  if (paymentMode === "AUTO" && !card) throw new ShiftError("יש לשמור אמצעי תשלום באזור האישי לפני הזמנת משמרת", "NO_PAYMENT_METHOD");
-  const chargeNow = paymentMode === "AUTO";
 
   const plan = await buildPlan({ userId, roomKey, weekday, windowId, startDate, now }, db);
   if (plan.conflicts.length > 0) throw new ShiftError("לא ניתן ליצור את המשמרת בגלל התנגשויות", "CONFLICT", { conflicts: plan.conflicts });
@@ -281,9 +269,7 @@ export async function createShift(
           windowId,
           startDate,
           endDate: plan.endDate,
-          status: chargeNow ? "PENDING" : "ACTIVE",
-          paymentMode,
-          paymentMethodId: card?.id ?? null,
+          status: "ACTIVE",
           occurrencePriceAgorot: Math.round(plan.monthlyPriceAgorot / 4),
           monthlyPriceAgorot: plan.monthlyPriceAgorot,
           idempotencyKey,
@@ -336,26 +322,8 @@ export async function createShift(
     return resultFor(existing, existing.charges.find((c) => c.isFirst)?.amountAgorot ?? 0, existing.charges.find((c) => c.isFirst)?.failureCode ?? undefined);
   }
 
-  // תשלום ידני: המשמרת מאושרת באישור המנהל, והתשלומים מתועדים ידנית
-  if (!chargeNow) {
-    await writeAudit(db, { action: "shift.create_manual", adminId: createdById, userId, entityType: "Shift", entityId: shiftId, outcome: "ok", after: { monthlyPriceAgorot: plan.monthlyPriceAgorot, startDate, windowId, weekday } });
-    await grantMakeupCredits(db, now, { shiftId });
-    return { status: "ACTIVE", shiftId, firstChargeAgorot: plan.firstChargeAgorot };
-  }
-
-  // חיוב ראשון, מיד באישור ההזמנה (גם כשתאריך ההתחלה עתידי)
-  const [firstMonth] = billingMonths(startDate);
-  const charge = await chargeShiftMonth({ shiftId, month: firstMonth, provider, isFirst: true, now, db });
-
-  if (charge.outcome === "PAID" || charge.outcome === "NOTHING_DUE" || charge.outcome === "ALREADY_PAID") {
-    await db.shift.updateMany({ where: { id: shiftId, status: "PENDING" }, data: { status: "ACTIVE" } });
-    await grantMakeupCredits(db, now, { shiftId });
-    return { status: "ACTIVE", shiftId, firstChargeAgorot: charge.amountAgorot ?? 0 };
-  }
-  if (charge.outcome === "FAILED") {
-    await abortPendingShift(db, shiftId, "first_charge_failed", now);
-    return { status: "CHARGE_FAILED", shiftId, failureCode: charge.failureCode };
-  }
-  // UNKNOWN / IN_PROGRESS / NEEDS_REVIEW: נשאר PENDING והמשבצות שמורות עד בירור
-  return { status: "PENDING_REVIEW", shiftId, firstChargeAgorot: charge.amountAgorot ?? 0 };
+  // המשמרת מאושרת באישור המנהל, והתשלומים מתועדים ידנית
+  await writeAudit(db, { action: "shift.create_manual", adminId: createdById, userId, entityType: "Shift", entityId: shiftId, outcome: "ok", after: { monthlyPriceAgorot: plan.monthlyPriceAgorot, startDate, windowId, weekday } });
+  await grantMakeupCredits(db, now, { shiftId });
+  return { status: "ACTIVE", shiftId, firstChargeAgorot: plan.firstChargeAgorot };
 }

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ROOM_LABELS } from "@/lib/rooms";
-import { EmptyState, Icon, SectionTitle } from "@/components/ui";
+import { EmptyState, SectionTitle } from "@/components/ui";
 import type {
   AppointmentStatus,
   Gender,
@@ -31,8 +31,6 @@ export type UserCardData = {
   phone: string | null;
   idNumber: string | null;
   gender: Gender | null;
-  cardLast4: string | null;
-  cardExpiry: string | null;
   role: Role;
   status: UserStatus;
   createdAt: Date;
@@ -67,7 +65,7 @@ function Detail({ label, children }: { label: string; children?: ReactNode }) {
   );
 }
 
-/** כרטיס לקוח: פרטים אישיים, אשראי (4 ספרות אחרונות בלבד) והיסטוריית הזמנות */
+/** כרטיס לקוח: פרטים אישיים והיסטוריית הזמנות */
 export function UserCard({
   user,
   now,
@@ -137,40 +135,11 @@ export function UserCard({
             {dateFmt.format(user.createdAt)}
           </Detail>
         </dl>
-
-        <div className="hairline-bronze my-6" />
-
-        <SectionTitle
-          index="2"
-          hint="מספר הכרטיס המלא וה-CVV אינם נשמרים במערכת"
-        >
-          אשראי
-        </SectionTitle>
-        <dl className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          <Detail label="כרטיס">
-            {user.cardLast4 && (
-              <span
-                dir="ltr"
-                className="tabular-nums inline-flex items-center gap-2"
-              >
-                <Icon name="card" className="w-4 h-4 text-stone-400" />
-                •••• {user.cardLast4}
-              </span>
-            )}
-          </Detail>
-          <Detail label="תוקף">
-            {user.cardExpiry && (
-              <span dir="ltr" className="tabular-nums">
-                {user.cardExpiry}
-              </span>
-            )}
-          </Detail>
-        </dl>
       </div>
 
       <div className="card p-6 sm:p-8">
         <SectionTitle
-          index="3"
+          index="2"
           aside={
             <span className="text-xs text-stone-500 tabular-nums">
               {confirmed.length} הזמנות מאושרות · {upcoming} קרובים

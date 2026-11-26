@@ -13,14 +13,15 @@ import {
   periodKeyOf,
   SHIFT_WEEKDAYS,
 } from "@/lib/shifts/calendar";
+import { windowPriceFor } from "@/lib/shifts/windows";
 import { requireActiveWindow } from "@/lib/shifts/windows-db";
-import { chargeShiftMonth, grantMakeupCredits, graceDeadline, refundChargeAmount, type ChargeResult } from "@/lib/shifts/billing";
+import { grantMakeupCredits, graceDeadline, refundChargeAmount } from "@/lib/shifts/billing";
 import { createAppointment } from "@/lib/booking";
 import { lockUserBalances } from "@/lib/payments/shared";
 import { BookingError } from "@/lib/booking-error";
 import type { RoomKey } from "@/generated/prisma/client";
 import { ShiftError } from "@/lib/shifts/errors";
-import { CHARGE_CLAIM_TTL_MS, MAX_NOTE_LENGTH, MAX_REASON_LENGTH } from "@/lib/shifts/policy";
+import { MAX_NOTE_LENGTH, MAX_REASON_LENGTH } from "@/lib/shifts/policy";
 import { abortPendingShift, findRoomConflicts, planOccurrences } from "@/lib/shifts/schedule";
 import { isUniqueViolation } from "@/lib/payments/shared";
 
@@ -53,8 +54,18 @@ export async function setShiftEligibility(params: { adminId: string; userId: str
 const UNPAID = ["FAILED", "UNKNOWN", "PENDING"] as const;
 
 /**
- * חידוש משמרת מושעית אחרי הסדרת חוב. המשמרת חוזרת לפעילות רק אם כל חיוביה שולמו/אופסו, או שהמנהל ויתר במפורש
- * (waiveUnpaid) על החיובים שנותרו: אין חידוש שקט שמתעלם מחוב.
+ * חיוב שחוסם חידוש: נכשל / במצב לא ידוע, או ממתין שמועד הפירעון שלו כבר הגיע (היום או קודם). חיוב עתידי שמועדו טרם
+ * הגיע אינו חוב: הוא לא חוסם חידוש, ולא מוותר עליו בחידוש (הוא ייגבה במועדו). ממתין בלי מועד (נתון ישן) נחשב חוב.
+ */
+function isOutstandingCharge(c: Pick<ShiftCharge, "status" | "dueDate">, todayIso: string): boolean {
+  if (!(UNPAID as readonly string[]).includes(c.status)) return false;
+  if (c.status !== "PENDING") return true;
+  return c.dueDate === null || c.dueDate <= todayIso;
+}
+
+/**
+ * חידוש משמרת מושעית אחרי הסדרת חוב. המשמרת חוזרת לפעילות רק אם כל החיובים שמועדם הגיע שולמו/אופסו, או שהמנהל ויתר
+ * במפורש (waiveUnpaid) על החיובים האלה: אין חידוש שקט שמתעלם מחוב. חיובים עתידיים אינם חוסמים ואינם נמחלים.
  */
 export async function resumeShift(params: { shiftId: string; adminId: string; waiveUnpaid?: boolean; note?: string; now?: Date; db?: PrismaClient }) {
   const { shiftId, adminId, waiveUnpaid = false, note, now = new Date(), db = defaultDb } = params;
@@ -63,7 +74,8 @@ export async function resumeShift(params: { shiftId: string; adminId: string; wa
   if (!shift) throw new ShiftError("המשמרת לא נמצאה", "NOT_FOUND");
   if (shift.status !== "SUSPENDED") throw new ShiftError("ניתן לחדש רק משמרת מושעית", "CONFLICT");
 
-  const unpaid = shift.charges.filter((c) => (UNPAID as readonly string[]).includes(c.status));
+  const todayIso = jerusalemTodayIso(now);
+  const unpaid = shift.charges.filter((c) => isOutstandingCharge(c, todayIso));
   if (unpaid.length > 0 && !waiveUnpaid) {
     throw new ShiftError("יש חיובים שלא הוסדרו. יש להסדיר אותם, או לוותר עליהם במפורש בחידוש", "CONFLICT");
   }
@@ -90,30 +102,9 @@ export async function suspendShiftManually(params: { shiftId: string; adminId: s
   if (count === 0) throw new ShiftError("ניתן להשעות רק משמרת פעילה", "CONFLICT");
 }
 
-/** ניסיון חיוב חוזר ע"י מנהל (אחרי כישלון ודאי, גם אחרי תקופת החסד). לא חל על מצב "לא ידוע" */
-export async function retryChargeAsAdmin(params: { chargeId: string; adminId: string; provider: PaymentProvider; now?: Date; db?: PrismaClient }): Promise<ChargeResult> {
-  const { chargeId, adminId, provider, now = new Date(), db = defaultDb } = params;
-  await assertAdmin(db, adminId);
-  const charge = await db.shiftCharge.findUnique({ where: { id: chargeId }, include: { shift: true } });
-  if (!charge) throw new ShiftError("החיוב לא נמצא", "NOT_FOUND");
-  if (charge.status === "UNKNOWN") throw new ShiftError("מצב החיוב לא ידוע. יש לברר אותו לפני כל ניסיון חוזר", "CONFLICT");
-  if (charge.status !== "FAILED") throw new ShiftError("ניתן לנסות שוב רק חיוב שנכשל", "CONFLICT");
-  if (charge.shift.paymentMode === "MANUAL") throw new ShiftError("במשמרת בתשלום ידני אין חיוב אוטומטי. יש לתעד את התשלום שהתקבל", "CONFLICT");
-  // משמרת מושעית אינה פעילה לחיוב רגיל: ניסיון מנהל מכוון מחייב אותה במפורש. ההשעיה נשארת: חידוש הוא החלטה נפרדת
-  // (resumeShift) ולא תוצר לוואי של ניסיון חיוב מוצלח
-  if (charge.shift.status === "SUSPENDED") {
-    await db.shift.update({ where: { id: charge.shiftId }, data: { status: "ACTIVE" } });
-    try {
-      return await chargeShiftMonth({ shiftId: charge.shiftId, month: charge.month, provider, retry: true, now, db });
-    } finally {
-      await db.shift.updateMany({ where: { id: charge.shiftId, status: "ACTIVE" }, data: { status: "SUSPENDED" } });
-    }
-  }
-  return chargeShiftMonth({ shiftId: charge.shiftId, month: charge.month, provider, retry: true, now, db });
-}
-
 /**
- * בירור ידני של חיוב במצב "לא ידוע": המנהל קובע, לפי בדיקה מול הספק, האם החיוב בוצע. בלי בירור כזה המערכת לא תחייב שוב.
+ * בירור ידני של חיוב במצב "לא ידוע" (נשאר רק בנתונים ישנים, מלפני הסרת החיוב האוטומטי): המנהל קובע, לפי בדיקה מול הספק,
+ * האם החיוב בוצע.
  */
 export async function resolveUnknownCharge(params: { chargeId: string; adminId: string; outcome: "PAID" | "NOT_CHARGED"; note?: string; now?: Date; db?: PrismaClient }) {
   const { chargeId, adminId, outcome, note, now = new Date(), db = defaultDb } = params;
@@ -233,6 +224,11 @@ export async function applyDayClosure(params: { date: string; adminId: string; n
         data: { status: "SKIPPED_CLOSED_DAY", statusNote: `closed_day:${date}`, makeupStatus: "OWED", makeupUpdatedAt: now },
       });
       if (count === 1 && occ.appointmentId) await tx.appointment.updateMany({ where: { id: occ.appointmentId, status: "CONFIRMED" }, data: { status: "CANCELLED" } });
+      if (count === 1) {
+        // מספר המפגשים בחיוב שטרם שולם מתעדכן (מידע בלבד: המחיר החודשי קבוע). אין חיוב אוטומטי שיחשב אותו מחדש
+        const scheduled = await tx.shiftOccurrence.count({ where: { shiftId: occ.shiftId, month: occ.month, status: "SCHEDULED" } });
+        await tx.shiftCharge.updateMany({ where: { shiftId: occ.shiftId, month: occ.month, status: { in: ["PENDING", "FAILED"] } }, data: { occurrenceCount: scheduled } });
+      }
       skipped += count;
     });
   }
@@ -350,9 +346,6 @@ export async function recordManualPayment(params: {
   if (charge.status === "PAID") throw new ShiftError("החיוב כבר שולם", "CONFLICT");
   if (charge.status === "UNKNOWN") throw new ShiftError("מצב החיוב לא ידוע. יש להכריע אותו בבירור החיוב", "CONFLICT");
   if (charge.status !== "PENDING" && charge.status !== "FAILED") throw new ShiftError("לא ניתן לתעד תשלום בחיוב זה", "CONFLICT");
-  if (charge.status === "PENDING" && charge.claimedAt && now.getTime() - charge.claimedAt.getTime() < CHARGE_CLAIM_TTL_MS) {
-    throw new ShiftError("החיוב מתבצע כעת מול הספק. יש לנסות שוב בעוד כמה דקות", "CONFLICT");
-  }
   if (!Number.isInteger(amountAgorot) || amountAgorot !== charge.amountAgorot) {
     throw new ShiftError("הסכום שהתקבל חייב להיות זהה לסכום החיוב. תשלום חלקי אינו נתמך כאן", "INVALID");
   }
@@ -518,11 +511,14 @@ export async function decideShiftRequest(params: {
   }
   // המחיר משתנה רק כשהבקשה כוללת מעבר מפורש למשבצת אחרת (אישור מפורש של המנהל למחיר החדש). שינוי חדר/יום בלבד
   // ממשיך לתמחר לפי המחיר שהמשמרת כבר התחייבה אליו, גם אם מחיר המשבצת (windowId הנוכחי) נערך מאז ההזמנה
+  // מעבר בין חדר רגיל לחדר סדנאות (או להפך) משנה את התמחור, ולכן מתומחר מחדש לפי המשבצת הנוכחית
   const windowChanged = request.proposedWindowId !== null;
-  const effectiveMonthlyPriceAgorot = windowChanged ? windowDef.monthlyPriceAgorot : shift.monthlyPriceAgorot;
+  const roomClassChanged = (newRoomKey === "WORKSHOP") !== (shift.room.key === "WORKSHOP");
+  const repriced = windowChanged || roomClassChanged;
+  const effectiveMonthlyPriceAgorot = repriced ? windowPriceFor(windowDef, newRoomKey) : shift.monthlyPriceAgorot;
 
   const planned = await planOccurrences(
-    { userId: shift.userId, roomKey: newRoomKey, weekday: newWeekday, windowId: newWindow, from, to: shift.endDate, startDate: shift.startDate, allowInactiveWindow: newWindow === shift.windowId, priceOverrideAgorot: windowChanged ? undefined : effectiveMonthlyPriceAgorot },
+    { userId: shift.userId, roomKey: newRoomKey, weekday: newWeekday, windowId: newWindow, from, to: shift.endDate, startDate: shift.startDate, allowInactiveWindow: newWindow === shift.windowId, priceOverrideAgorot: repriced ? undefined : effectiveMonthlyPriceAgorot },
     db
   ).catch((err) => {
     if (err instanceof ShiftError && err.message === "אין מופעים בתקופה שנבחרה") return { occurrences: [], conflicts: [], window: windowDef };
@@ -563,10 +559,19 @@ export async function decideShiftRequest(params: {
       where: { id: shift.id },
       data: { roomId: newRoom.id, weekday: newWeekday, windowId: newWindow, occurrencePriceAgorot: Math.round(effectiveMonthlyPriceAgorot / 4), monthlyPriceAgorot: effectiveMonthlyPriceAgorot },
     });
+    // חיובים שטרם שולמו מתקופת ההחלה והלאה מתעדכנים כאן למחיר החודשי החל ולמספר המפגשים בפועל: אין חיוב אוטומטי
+    // שיחשב אותם מחדש, ותיעוד תשלום ידני דורש את הסכום המדויק. חיוב ששולם, אופס או במצב לא ידוע אינו משתנה.
+    // משמרת ישנה שתומחרה לפי מופע (מחיר חודשי 0) מחושבת מסכום מחירי המופעים בתקופה
+    const fromMonth = periodKeyOf(shift.startDate, from);
+    const openCharges = await tx.shiftCharge.findMany({ where: { shiftId: shift.id, month: { gte: fromMonth }, status: { in: ["PENDING", "FAILED"] } } });
+    for (const charge of openCharges) {
+      const agg = await tx.shiftOccurrence.aggregate({ where: { shiftId: shift.id, month: charge.month, status: "SCHEDULED" }, _sum: { priceAgorot: true }, _count: true });
+      const amountAgorot = effectiveMonthlyPriceAgorot > 0 ? effectiveMonthlyPriceAgorot : agg._sum.priceAgorot ?? 0;
+      await tx.shiftCharge.update({ where: { id: charge.id }, data: { amountAgorot, occurrenceCount: agg._count } });
+    }
     return planned.occurrences.filter((o) => !o.skipReason).length;
   });
 
-  // חיובים עתידיים שטרם נגבו מתעדכנים לבד: הסכום מחושב מהמופעים המתוזמנים בעת החיוב. חיוב שנכשל מרוענן בניסיון החוזר
   await grantMakeupCredits(db, now, { shiftId: shift.id });
   return { requestId, status: "APPROVED", appliedFrom: from, cancelledOccurrences: future.length, createdOccurrences: created };
 }

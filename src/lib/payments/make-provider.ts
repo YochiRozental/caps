@@ -8,7 +8,6 @@ import { timeStep } from "@/lib/payments/timing";
 import {
   PaymentError,
   WebhookVerificationError,
-  type ChargeResult,
   type CreatePaymentRequestInput,
   type PaymentEnvironment,
   type PaymentProvider,
@@ -28,7 +27,7 @@ import {
  *  - getPaymentStatus: אין עדיין מבנה תשובה מאומת של "Get Payment Link Info" דרך Make, לכן לעולם לא מחזירים
  *    SUCCEEDED (או כל סטטוס) בלי אימות אמיתי. הודעת הצלחה מהדפדפן/Notify URL אינה הוכחת תשלום.
  *  - parseWebhook: התראת שרת מ-Grow לכתובת שהאתר חתם (HMAC), טריגר לאימות מחדש בלבד (ראו parseWebhook).
- *  - refund / chargeSavedMethod / cancelPayment / שמירת כרטיס: אין תרחיש Make מתאים.
+ *  - refund / cancelPayment: אין תרחיש Make מתאים. אין שמירת כרטיס או חיוב טוקן במערכת כלל.
  * הספק חסום להפעלה דרך PAYMENT_PROVIDER כל עוד MAKE_PROVIDER_VERIFICATION_READY=false (ראו config.ts).
  */
 export const MAKE_PROVIDER_VERIFICATION_READY = false;
@@ -409,7 +408,6 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
       throw new PaymentError("הסכום חייב להיות מספר שלם חיובי של אגורות");
     }
     if (input.currency !== "ILS") throw new PaymentError("רק ILS נתמך");
-    if (input.savePaymentMethod) throw new PaymentError("שמירת אמצעי תשלום אינה נתמכת דרך Make");
     if (!input.idempotencyKey) throw new PaymentError("חסר מפתח idempotency");
 
     const fingerprint = JSON.stringify([input.amountAgorot, input.currency, input.customerRef]);
@@ -642,10 +640,6 @@ export class MakeGrowPaymentProvider implements PaymentProvider {
 
   async refund(): Promise<RefundResult> {
     throw new PaymentError("החזר אינו נתמך דרך Make");
-  }
-
-  async chargeSavedMethod(): Promise<ChargeResult> {
-    throw new PaymentError("חיוב אמצעי תשלום שמור אינו נתמך דרך Make");
   }
 
   /**

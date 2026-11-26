@@ -5,6 +5,7 @@ import {
   formatAgorot,
   packageExpiry,
   packageSavingsAgorot,
+  isWorkshopRoom,
   regularPriceAgorot,
   splitBookingPrice,
   trialDiscountAgorot,
@@ -123,4 +124,9 @@ test("formatAgorot", () => {
   assert.equal(formatAgorot(4160), "41.60");
   assert.equal(formatAgorot(5), "0.05");
   assert.equal(formatAgorot(275600), "2756.00");
+});
+
+test("workshop room is the only room priced separately", () => {
+  assert.equal(isWorkshopRoom("WORKSHOP"), true);
+  for (const k of ["ROOM1", "ROOM2", "ROOM3", "ROOM4", "ROOM1_2"]) assert.equal(isWorkshopRoom(k), false, k);
 });

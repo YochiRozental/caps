@@ -12,9 +12,13 @@ const FULL_DETAILS: BookingDetails = {
   phone: "0501234567",
   idNumber: "000000018",
   gender: "MALE",
-  cardLast4: "4242",
-  cardExpiry: "12/40",
 };
+
+test("getMissingBookingDetails: אין דרישת אשראי להזמנה — התשלום מתבצע בדף של Grow בלבד", () => {
+  assert.deepEqual(getMissingBookingDetails(FULL_DETAILS), []);
+  // שדות כרטיס ישנים (אם יגיעו מאובייקט כלשהו) אינם משפיעים על ההחלטה
+  assert.deepEqual(getMissingBookingDetails({ ...FULL_DETAILS, cardLast4: null } as BookingDetails), []);
+});
 
 test("getMissingBookingDetails: משתמש בלי מגדר אינו יכול להזמין קליניקה (גם דרך ה-API, שבודק פונקציה זו)", () => {
   assert.deepEqual(getMissingBookingDetails(FULL_DETAILS), []); // כל הפרטים קיימים — אין חסר

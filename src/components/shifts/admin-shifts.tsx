@@ -6,7 +6,7 @@ import { Alert, EmptyState, Loading, SectionTitle } from "@/components/ui";
 import { Dialog, ToneBadge, jerusalemTime } from "@/components/shifts/bits";
 import { WindowsTab } from "@/components/shifts/windows-tab";
 import { todayIsoDate } from "@/lib/slots";
-import { windowLabelOf, type ShiftWindowDef } from "@/lib/shifts/windows";
+import { windowLabelOf, windowPriceFor, type ShiftWindowDef } from "@/lib/shifts/windows";
 import { api, shekel, useSingleFlight } from "@/lib/payments/client";
 import { ROOM_KEYS, ROOM_LABELS } from "@/lib/rooms";
 import {
@@ -214,7 +214,6 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
   const [weekday, setWeekday] = useState(0);
   const [windowId, setWindowId] = useState("");
   const [startDate, setStartDate] = useState(todayIsoDate());
-  const [paymentMode, setPaymentMode] = useState<"MANUAL" | "AUTO">("MANUAL");
   const [error, setError] = useState<string | null>(null);
   const clientKey = useRef(globalThis.crypto.randomUUID().replace(/-/g, ""));
   const { busy, run } = useSingleFlight();
@@ -231,8 +230,8 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
   async function submit() {
     await run(async () => {
       setError(null);
-      const res = await api<{ status?: string }>("/api/admin/shifts", { body: { userId, roomKey, weekday, windowId, startDate, paymentMode, clientKey: clientKey.current } });
-      if (res.ok && res.data.status === "ACTIVE") onCreated(paymentMode === "MANUAL" ? "המשמרת נוצרה. התשלומים יתועדו ידנית." : "המשמרת נוצרה.");
+      const res = await api<{ status?: string }>("/api/admin/shifts", { body: { userId, roomKey, weekday, windowId, startDate, clientKey: clientKey.current } });
+      if (res.ok && res.data.status === "ACTIVE") onCreated("המשמרת נוצרה. התשלומים יתועדו ידנית.");
       else {
         const message = res.data.error ?? "לא ניתן ליצור את המשמרת";
         setError(message);
@@ -279,7 +278,7 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
               <label className="field-label" htmlFor="cs-window">משבצת</label>
               <select id="cs-window" className="field" value={windowId} onChange={(e) => setWindowId(e.target.value)}>
                 {windows.map((w) => (
-                  <option key={w.id} value={w.id}>{windowLabelOf(w)} · {shekel(w.monthlyPriceAgorot)}</option>
+                  <option key={w.id} value={w.id}>{windowLabelOf(w)} · {shekel(windowPriceFor(w, roomKey))}</option>
                 ))}
               </select>
             </div>
@@ -288,17 +287,7 @@ function CreateShiftDialog({ customers, onClose, onCreated, onError }: { custome
               <input id="cs-start" type="date" className="field" value={startDate} min={todayIsoDate()} onChange={(e) => setStartDate(e.target.value)} />
             </div>
           </div>
-          <fieldset className="space-y-1">
-            <legend className="field-label">אופן תשלום</legend>
-            <label className="flex items-center gap-2">
-              <input type="radio" name="cs-mode" checked={paymentMode === "MANUAL"} onChange={() => setPaymentMode("MANUAL")} />
-              ידני בתיאום (בלי אמצעי תשלום; כל תשלום מתועד ידנית)
-            </label>
-            <label className="flex items-center gap-2">
-              <input type="radio" name="cs-mode" checked={paymentMode === "AUTO"} onChange={() => setPaymentMode("AUTO")} />
-              חיוב אוטומטי באמצעי תשלום שמור של הלקוח
-            </label>
-          </fieldset>
+          <p className="text-xs text-stone-500">תשלום ידני בתיאום: אין חיוב אוטומטי, וכל תשלום שהתקבל מתועד ידנית בכרטיס המשמרת.</p>
           {error && <Alert tone="error">{error}</Alert>}
           <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
             <button type="button" className="btn btn-secondary" disabled={busy} onClick={onClose}>
@@ -414,7 +403,6 @@ function ShiftsTab({ version, onChanged, tell, eligible }: { version: number; on
                       {r.unknownCharges > 0 && <ToneBadge tone="pending">{r.unknownCharges} בבירור</ToneBadge>}
                       {r.hasOpenRequest && <ToneBadge tone="pending">בקשה פתוחה</ToneBadge>}
                       {r.makeupOwed > 0 && <ToneBadge tone="pending">{r.makeupOwed} שעות חלופיות</ToneBadge>}
-                      {r.paymentMode === "MANUAL" && <ToneBadge tone="neutral">תשלום ידני</ToneBadge>}
                     </td>
                   </tr>
                 );
@@ -474,7 +462,7 @@ function ShiftDetailDialog({ id, version, onClose, onChanged, tell }: { id: stri
           <p>
             <strong>{shift.user.name}</strong> · {shift.room.name} · יום {WEEKDAY_NAMES[shift.weekday]} · {windowLabel(shift.windowId)}
             <span className="block text-stone-500">
-              {dateLabel(shift.startDate)} – {dateLabel(shift.endDate)} · {shift.monthlyPriceAgorot > 0 ? `${shekel(shift.monthlyPriceAgorot)} לחודש (סה"כ ${shekel(shift.totalAgorot)})` : `${shekel(shift.occurrencePriceAgorot)} למופע`} · {SHIFT_STATUS_TEXT[shift.status]?.label ?? shift.status} · {shift.paymentMode === "MANUAL" ? "תשלום ידני" : "חיוב אוטומטי"}
+              {dateLabel(shift.startDate)} – {dateLabel(shift.endDate)} · {shift.monthlyPriceAgorot > 0 ? `${shekel(shift.monthlyPriceAgorot)} לחודש (סה"כ ${shekel(shift.totalAgorot)})` : `${shekel(shift.occurrencePriceAgorot)} למופע`} · {SHIFT_STATUS_TEXT[shift.status]?.label ?? shift.status} · תשלום ידני
             </span>
           </p>
           {shift.status === "SUSPENDED" && <Alert tone="error">מושעית: {suspensionText(shift.suspensionReason)}</Alert>}
@@ -492,7 +480,6 @@ function ShiftDetailDialog({ id, version, onClose, onChanged, tell }: { id: stri
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span>
                           {c.dueDate ? dateLabel(c.dueDate) : monthLabel(c.month)} · <strong>{shekel(c.amountAgorot)}</strong>
-                          {shift.paymentMode === "AUTO" && ` · ניסיון ${c.attempt}`}
                         </span>
                         <ToneBadge tone={cs.tone}>{cs.label}</ToneBadge>
                       </div>
@@ -514,11 +501,6 @@ function ShiftDetailDialog({ id, version, onClose, onChanged, tell }: { id: stri
                         />
                       )}
                       <div className="flex flex-wrap gap-2">
-                        {c.status === "FAILED" && shift.paymentMode === "AUTO" && (
-                          <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => act(`/api/admin/shifts/charges/${c.id}`, { action: "retry" }, "החיוב נוסה שוב")}>
-                            ניסיון חיוב חוזר
-                          </button>
-                        )}
                         {c.status === "UNKNOWN" && (
                           <>
                             <button
@@ -769,7 +751,7 @@ function BillingTab({ runs, onChanged, tell }: { runs: CronRunRow[]; onChanged: 
     await run(async () => {
       const res = await api<{ outcome?: string; status?: string }>("/api/admin/shifts/billing", { body: {} });
       if (res.ok) {
-        tell("success", res.data.outcome === "ALREADY_RUNNING" ? "ריצה אחרת כבר פעילה" : "ריצת החיוב הסתיימה");
+        tell("success", res.data.outcome === "ALREADY_RUNNING" ? "ריצה אחרת כבר פעילה" : "הריצה היומית הסתיימה");
         onChanged();
       } else tell("error", res.data.error ?? "הריצה נכשלה");
     });
@@ -788,9 +770,9 @@ function BillingTab({ runs, onChanged, tell }: { runs: CronRunRow[]; onChanged: 
   return (
     <section className="space-y-6">
       <div className="card p-5 space-y-3">
-        <SectionTitle hint="חיוב אוטומטי רץ בתחילת כל חודש. כאן אפשר להריץ ידנית; הריצה בטוחה להרצה חוזרת ולא תחייב פעמיים">חיוב חודשי</SectionTitle>
+        <SectionTitle hint="אין חיוב אוטומטי. הריצה היומית מסמנת תשלומים שלא התקבלו במועד, משעה משמרות שתקופת החסד שלהן חלפה ומסיימת משמרות שהסתיימו. בטוחה להרצה חוזרת">ריצה יומית</SectionTitle>
         <button type="button" className="btn btn-primary" disabled={busy} onClick={runBilling}>
-          {busy ? "רץ..." : "הרצת חיוב חודשי עכשיו"}
+          {busy ? "רץ..." : "הרצת הריצה היומית עכשיו"}
         </button>
         {runs.length === 0 ? (
           <p className="text-sm text-stone-500">עדיין לא בוצעו ריצות.</p>

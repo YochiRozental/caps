@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { last9Digits } from "@/ivr/phone";
-import { isValidCardExpiry, isValidCardNumber, isValidIsraeliId, isValidIsraeliPhone } from "@/lib/validators";
+import { isValidIsraeliId, isValidIsraeliPhone } from "@/lib/validators";
 
 export const digitsOnly = (value: string) => value.replace(/\D/g, "");
 export const normalizePhone = (value: string) => digitsOnly(value).replace(/^972/, "0");
@@ -14,9 +14,6 @@ export const profileFieldSchemas = {
   gender: z.enum(["MALE", "FEMALE"], { error: "יש לבחור מגדר" }),
   phone: z.string().trim().refine(isValidIsraeliPhone, "מספר פלאפון לא תקין"),
   idNumber: z.string().trim().refine(isValidIsraeliId, "מספר זהות לא תקין"),
-  cardNumber: z.string().trim().refine(isValidCardNumber, "מספר כרטיס אשראי לא תקין"),
-  cardExpiry: z.string().trim().refine((v) => isValidCardExpiry(v), "תוקף הכרטיס לא תקין או שפג"),
-  cardCvv: z.string().trim().regex(/^\d{3}$/, "יש להזין 3 ספרות בגב הכרטיס"),
 };
 
 /** שדה שמותר להשאיר ריק: מחרוזת ריקה נחשבת כלא הוזן */
@@ -29,11 +26,10 @@ export type BookingDetails = {
   phone: string | null;
   idNumber: string | null;
   gender: "MALE" | "FEMALE" | null;
-  cardLast4: string | null;
-  cardExpiry: string | null;
 };
 
-export type MissingField = "firstName" | "lastName" | "phone" | "idNumber" | "gender" | "cardNumber" | "cardExpiry";
+/** פרטי אשראי אינם חלק מהפרופיל: התשלום מתבצע בדף המאובטח של Grow בלבד, והאתר אינו קולט או שומר פרטי כרטיס */
+export type MissingField = "firstName" | "lastName" | "phone" | "idNumber" | "gender";
 
 /** השדות שחסרים או אינם תקינים כדי שאפשר יהיה להזמין חדר (ריק = ההזמנה מותרת) */
 export function getMissingBookingDetails(user: BookingDetails): MissingField[] {
@@ -43,8 +39,6 @@ export function getMissingBookingDetails(user: BookingDetails): MissingField[] {
   if (!user.phone || !isValidIsraeliPhone(user.phone)) missing.push("phone");
   if (!user.idNumber || !isValidIsraeliId(user.idNumber)) missing.push("idNumber");
   if (!user.gender) missing.push("gender");
-  if (!user.cardLast4) missing.push("cardNumber");
-  if (!user.cardExpiry || !isValidCardExpiry(user.cardExpiry)) missing.push("cardExpiry");
   return missing;
 }
 

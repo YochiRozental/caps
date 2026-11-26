@@ -149,12 +149,11 @@ test("תשובה שאינה JSON נכשלת", async () => {
   await assert.rejects(p.createPaymentRequest(REQ), /JSON/);
 });
 
-test("סכום לא תקין, מטבע זר, שמירת כרטיס ולקוח בלי טלפון נכשלים לפני כל קריאה ל-Make", async () => {
+test("סכום לא תקין, מטבע זר ולקוח בלי טלפון נכשלים לפני כל קריאה ל-Make", async () => {
   const { p, calls } = provider(() => ok({ url: "https://pay.grow.example/abc" }));
   await assert.rejects(p.createPaymentRequest({ ...REQ, amountAgorot: 0, idempotencyKey: "a" }), PaymentError);
   await assert.rejects(p.createPaymentRequest({ ...REQ, amountAgorot: 10.5, idempotencyKey: "b" }), PaymentError);
   await assert.rejects(p.createPaymentRequest({ ...REQ, currency: "USD" as "ILS", idempotencyKey: "c" }), PaymentError);
-  await assert.rejects(p.createPaymentRequest({ ...REQ, savePaymentMethod: true, idempotencyKey: "d" }), /שמירת אמצעי תשלום/);
   await assert.rejects(p.createPaymentRequest({ ...REQ, customerRef: "nophone", idempotencyKey: "e" }), PaymentError);
   assert.equal(calls.length, 0);
 });
@@ -169,7 +168,6 @@ test("getPaymentStatus לעולם לא מחזיר סטטוס (בפרט לא SUCC
 test("פעולות שלא נתמכות נכשלות במפורש בלי פנייה לרשת", async () => {
   const { p, calls } = provider(() => ok({}));
   await assert.rejects(p.refund({ providerPaymentId: "x", idempotencyKey: "r" }), PaymentError);
-  await assert.rejects(p.chargeSavedMethod({ token: "t", amountAgorot: 100, currency: "ILS", description: "d", idempotencyKey: "c", customerRef: "u1" }), PaymentError);
   await assert.rejects(p.cancelPayment("x"), PaymentError);
   await assert.rejects(p.parseWebhook({ rawBody: "{}", headers: {} }), WebhookVerificationError);
   assert.equal(calls.length, 0);

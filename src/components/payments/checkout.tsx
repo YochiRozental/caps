@@ -14,8 +14,6 @@ import {
 import {
   InfoRow,
   PaymentStatusBadge,
-  SandboxNotice,
-  SandboxPanel,
   TrialDiscountBreakdown,
 } from "@/components/payments/bits";
 import {
@@ -26,7 +24,6 @@ import {
   shekel,
   timeText,
   useHoldCountdown,
-  usePaymentsGate,
   useSingleFlight,
 } from "@/lib/payments/client";
 import type { HoldDetails } from "@/lib/payments/views";
@@ -94,7 +91,6 @@ function NoticeBox({ notice }: { notice: Notice }) {
 
 export function Checkout({ appointmentId }: { appointmentId: string }) {
   const router = useRouter();
-  const gate = usePaymentsGate();
   const [details, setDetails] = useState<HoldDetails | null>(null);
   const [missing, setMissing] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -375,8 +371,6 @@ export function Checkout({ appointmentId }: { appointmentId: string }) {
         subtitle="החדר שמור עבורכם עד להשלמת התשלום"
       />
 
-      {gate.sandbox && <SandboxNotice />}
-
       <div
         className={`flex items-center justify-between gap-4 rounded-2xl px-5 py-4 ring-1 ${
           urgent
@@ -479,21 +473,13 @@ export function Checkout({ appointmentId }: { appointmentId: string }) {
             ההזמנה תאושר רק לאחר שהשרת יאמת את התשלום מול הספק. ניתן לרענן את
             הדף בבטחה: המצב נשמר.
           </p>
-          {gate.sandbox && pending.providerPaymentId && (
-            <SandboxPanel
-              providerPaymentId={pending.providerPaymentId}
-              onDone={() => void verifyPayment(pending.id)}
-            />
-          )}
-          {!gate.sandbox && (
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => void pay(pending.packageMinutes > 0)}
-            >
-              מעבר לדף התשלום
-            </button>
-          )}
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => void pay(pending.packageMinutes > 0)}
+          >
+            מעבר לדף התשלום
+          </button>
           <button
             type="button"
             className="btn btn-secondary btn-sm"

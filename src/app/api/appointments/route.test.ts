@@ -26,7 +26,7 @@ mock.module("@/lib/booking", {
   },
 });
 
-const ENV_KEYS = ["PAYMENT_PROVIDER", "PAYMENT_MOCK_OPEN_TO_ALL", "PAYMENT_MOCK_ALLOW_DEPLOYED", "PAYMENT_MOCK_TEST_USERS"] as const;
+const ENV_KEYS = ["PAYMENT_PROVIDER"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 
 beforeEach(() => {
@@ -62,23 +62,14 @@ test("זרימת התשלום מחויבת (ספק פעיל): הזמנה ישי�
   assert.equal(created, 0);
 });
 
-test("גם ספק grow ו-mock (לא מוגבל) חוסמים הזמנה ישירה", async () => {
-  for (const name of ["grow", "mock"]) {
+test("גם ספק grow חוסם הזמנה ישירה", async () => {
+  for (const name of ["grow"]) {
     provider = { name };
     const r = await post();
     assert.equal(r.status, 409, name);
     assert.equal(r.body.code, "PAYMENT_REQUIRED");
   }
   assert.equal(created, 0);
-});
-
-test("אתר מותקן עם Mock מוגבל: משתמש שאינו משתמש בדיקה ממשיך בהזמנה הקיימת (לא נחסם)", async () => {
-  provider = { name: "mock" };
-  process.env.PAYMENT_PROVIDER = "mock";
-  process.env.PAYMENT_MOCK_ALLOW_DEPLOYED = "true";
-  process.env.PAYMENT_MOCK_TEST_USERS = "someone-else@example.com";
-  const r = await post();
-  assert.notEqual(r.body.code, "PAYMENT_REQUIRED");
 });
 
 test("בלי ספק מוגדר: ההתנהגות הקיימת, ללא חסימה", async () => {

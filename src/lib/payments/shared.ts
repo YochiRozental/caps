@@ -15,8 +15,6 @@ export type FlowErrorCode =
   | "INSUFFICIENT_BALANCE"
   /** חלוקת התשלום (סכום/דקות) השתנתה מאז שהוצגה ללקוח ואושרה */
   | "PLAN_CHANGED"
-  /** אין אמצעי תשלום שמור שאפשר לחייב */
-  | "NO_PAYMENT_METHOD"
   /** כשל בספק התשלום (לא ידוע אם בוצע חיוב) */
   | "PROVIDER_ERROR";
 

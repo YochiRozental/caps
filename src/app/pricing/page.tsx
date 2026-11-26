@@ -1,18 +1,37 @@
 import Link from "next/link";
 import { BrandHeader, Icon, SectionTitle } from "@/components/ui";
 import { TRIAL_DISCOUNT_PERCENT, formatAgorot, regularPriceAgorot } from "@/lib/payments/pricing";
-import { getRegularPricing, hoursPackageOptions } from "@/lib/payments/pricing-db";
+import { getRegularPricing, hoursPackageOptions, workshopHoursPackageOptions } from "@/lib/payments/pricing-db";
 import { listShiftWindows } from "@/lib/shifts/windows-db";
 import { hhmm } from "@/lib/shifts/windows";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "מחירון | הקפסולה" };
+export const metadata = { title: "מחירון",
+  alternates: { canonical: "/pricing" } };
+
+/** מספר המפגשים בחודש שלפיו מחושב המחיר השעתי של משמרת (כמו מחיר המופע הממוצע במערכת: חודשי ÷ 4) */
+const SHIFT_SESSIONS_PER_MONTH = 4;
+
+/** מחיר שעתי של משמרת: מחיר חודשי ÷ מפגשים בחודש ÷ שעות המשמרת. שקלים שלמים, ואם יש אגורות — עם שתי ספרות */
+const shiftHourly = (monthlyAgorot: number, w: { startMinutes: number; endMinutes: number }) => {
+  const hours = (w.endMinutes - w.startMinutes) / 60;
+  const agorot = Math.round(monthlyAgorot / SHIFT_SESSIONS_PER_MONTH / hours);
+  return agorot % 100 === 0 ? String(agorot / 100) : formatAgorot(agorot);
+};
+
+/** מחיר לשעה בודדת בתוך כרטיסייה: שקלים שלמים, ואם יש אגורות — עם שתי ספרות */
+const perHour = (p: { hours: number; priceAgorot: number }) => {
+  const agorot = Math.round(p.priceAgorot / p.hours);
+  return agorot % 100 === 0 ? String(agorot / 100) : formatAgorot(agorot);
+};
 
 export default async function PricingPage() {
   const [shiftWindowsAll, pricing] = await Promise.all([listShiftWindows({ activeOnly: true }), getRegularPricing()]);
   const shiftWindows = shiftWindowsAll.filter((w) => w.active);
   const packages = hoursPackageOptions(pricing);
+  const workshopPackages = workshopHoursPackageOptions(pricing);
   const singleHourAgorot = regularPriceAgorot(60, pricing.hourlyAgorot);
+  const workshopSingleHourAgorot = regularPriceAgorot(60, pricing.workshopHourlyAgorot);
   const trialAgorot = Math.round((singleHourAgorot * (100 - TRIAL_DISCOUNT_PERCENT)) / 100);
 
   return (
@@ -39,7 +58,8 @@ export default async function PricingPage() {
               <thead>
                 <tr>
                   <th>שעות המשמרת</th>
-                  <th>מחיר לחודש</th>
+                  <th>מחיר לקפסולה</th>
+                  <th>מחיר לחדר סדנאות</th>
                 </tr>
               </thead>
               <tbody>
@@ -49,7 +69,10 @@ export default async function PricingPage() {
                       {hhmm(w.startMinutes)}–{hhmm(w.endMinutes)}
                     </td>
                     <td className="tabular-nums">
-                      <strong>{w.monthlyPriceAgorot / 100} ₪</strong>
+                      <strong>{shiftHourly(w.monthlyPriceAgorot, w)} ₪</strong> <span className="text-xs text-stone-500">לשעה</span>
+                    </td>
+                    <td className="tabular-nums">
+                      <strong>{shiftHourly(w.workshopMonthlyPriceAgorot, w)} ₪</strong> <span className="text-xs text-stone-500">לשעה</span>
                     </td>
                   </tr>
                 ))}
@@ -57,18 +80,31 @@ export default async function PricingPage() {
             </table>
           </div>
         </div>
+        <p className="text-xs text-stone-500 mt-2">המחיר לשעה מחושב לפי ארבעה מפגשים בחודש. החיוב בפועל הוא מחיר חודשי קבוע.</p>
       </section>
 
-      {/* כרטיסיות שעות */}
+      {/* כרטיסיות לקפסולות */}
       <section className="mb-10">
         <SectionTitle index="2" hint="יתרת שעות לניצול גמיש, ללא התחייבות למשמרת קבועה">
-          כרטיסיות שעות
+          כרטיסיות לקפסולות
         </SectionTitle>
         <div className="grid sm:grid-cols-3 gap-4">
           {packages.map((p) => (
             <div key={p.hours} className="card card-hover p-6 text-center">
               <p className="font-display text-lg font-bold text-stone-900">{p.hours} שעות</p>
-              <p className="font-display text-3xl font-bold text-brand-700 mt-2 tabular-nums">{p.priceAgorot / 100} ₪</p>
+              <p className="font-display text-3xl font-bold text-brand-700 mt-2 tabular-nums">{perHour(p)} ₪</p>
+              <p className="text-sm text-stone-500 mt-1">לשעה</p>
+            </div>
+          ))}
+        </div>
+        <h3 className="font-display text-lg font-bold text-stone-900 mt-6 mb-3">כרטיסיות לחדר סדנאות</h3>
+        <p className="text-sm text-stone-500 mb-3">כרטיסיית חדר סדנאות מנוצלת רק להזמנות בחדר סדנאות, וכרטיסייה רגילה אינה מנוצלת בו.</p>
+        <div className="grid sm:grid-cols-3 gap-4" data-testid="workshop-packages">
+          {workshopPackages.map((p) => (
+            <div key={p.hours} className="card card-hover p-6 text-center">
+              <p className="font-display text-lg font-bold text-stone-900">{p.hours} שעות</p>
+              <p className="font-display text-3xl font-bold text-brand-700 mt-2 tabular-nums">{perHour(p)} ₪</p>
+              <p className="text-sm text-stone-500 mt-1">לשעה</p>
             </div>
           ))}
         </div>
@@ -79,9 +115,15 @@ export default async function PricingPage() {
         <SectionTitle index="3" hint="הזמנת שעה בודדת, ללא רכישת כרטיסייה או משמרת">
           הזמנה בודדת
         </SectionTitle>
-        <div className="card p-6 flex items-center justify-between gap-4 max-w-md">
-          <p className="font-display text-lg font-bold text-stone-900">שעה אחת</p>
-          <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{singleHourAgorot / 100} ₪</p>
+        <div className="grid sm:grid-cols-2 gap-4 max-w-2xl">
+          <div className="card p-6 flex items-center justify-between gap-4">
+            <p className="font-display text-lg font-bold text-stone-900">שעה אחת בקפסולה</p>
+            <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{singleHourAgorot / 100} ₪</p>
+          </div>
+          <div className="card p-6 flex items-center justify-between gap-4" data-testid="workshop-hour">
+            <p className="font-display text-lg font-bold text-stone-900">שעה אחת בחדר סדנאות</p>
+            <p className="font-display text-2xl font-bold text-brand-700 tabular-nums">{workshopSingleHourAgorot / 100} ₪</p>
+          </div>
         </div>
       </section>
 

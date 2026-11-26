@@ -2,11 +2,8 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { InMemoryMockStore, type MockStore } from "@/lib/payments/mock-store";
 import {
   IdempotencyConflictError,
-  PaymentError,
   PaymentStateError,
   WebhookVerificationError,
-  type ChargeResult,
-  type ChargeSavedMethodInput,
   type CreatePaymentRequestInput,
   type PaymentProvider,
   type PaymentRequestResult,
@@ -14,10 +11,18 @@ import {
   type ProviderPaymentStatus,
   type RefundInput,
   type RefundResult,
-  type SavedPaymentMethod,
   type VerifiedPaymentStatus,
   type WebhookInput,
 } from "@/lib/payments/provider";
+
+/**
+ * ספק מדומה לבדיקות אוטומטיות בלבד. אינו זמין לאתר: config.ts אינו מכיר אותו, ואין דרך להפעיל אותו דרך משתני סביבה.
+ * קוד אפליקטיבי לעולם לא מייבא את הקובץ הזה; רק קבצי *.test.ts.
+ *
+ * מדמה את מחזור החיים של תשלום בדף מתארח (כמו Grow): יצירה, השלמה בעמוד הספק (completeCheckout), webhook חתום,
+ * שליפת סטטוס והחזרים, כדי לבדוק את הלוגיקה שלנו (מניעת חיוב כפול, אישור רק אחרי אימות, החזרים) בלי כסף אמיתי ובלי
+ * חיבור חיצוני. אין בו כרטיס שמור או חיוב טוקן, כמו באתר עצמו.
+ */
 
 export const MOCK_SIGNATURE_HEADER = "x-mock-signature";
 
@@ -26,9 +31,7 @@ interface MockPayment {
   amountAgorot: number;
   status: ProviderPaymentStatus;
   refundedAgorot: number;
-  savePaymentMethod: boolean;
   failureCode?: string;
-  savedPaymentMethod?: SavedPaymentMethod;
 }
 
 interface IdempotencyEntry {
@@ -41,37 +44,18 @@ interface RefundEntry {
   fingerprint: string;
 }
 
-interface TokenEntry {
-  declined: boolean;
-}
-
-/**
- * ספק מדומה. מדמה את מחזור החיים של תשלום אמיתי: יצירה, השלמה בעמוד המאובטח של הספק (completeCheckout),
- * webhook חתום, שליפת סטטוס, החזרים וחיוב אמצעי שמור. אין לו שום חיבור חיצוני.
- * המצב נשמר ב-MockStore: בזיכרון לבדיקות יחידה, וב-PostgreSQL (PrismaMockStore) כשהאפליקציה רצה, כדי
- * שהפעלה מחדש או בקשה בתהליך אחר לא ישכחו תשלומים. אל תיצרו אותו בקוד אפליקטיבי: רק דרך getPaymentProvider.
- */
 export class MockPaymentProvider implements PaymentProvider {
   readonly name = "mock";
   readonly environment = "sandbox" as const;
 
   constructor(
     private readonly webhookSecret: string,
-    private readonly store: MockStore = new InMemoryMockStore(),
-    /** הגבלת לקוחות (אתר מותקן): מחזירה false ללקוח שאינו משתמש בדיקה מורשה. ללא פונקציה — אין הגבלה (הדגמה מקומית) */
-    private readonly customerAllowed?: (customerRef: string) => Promise<boolean>
+    private readonly store: MockStore = new InMemoryMockStore()
   ) {}
-
-  private async assertCustomerAllowed(customerRef: string) {
-    if (this.customerAllowed && !(await this.customerAllowed(customerRef))) {
-      throw new PaymentError("תשלומי הדמה זמינים רק למשתמשי בדיקה מורשים");
-    }
-  }
 
   async createPaymentRequest(input: CreatePaymentRequestInput): Promise<PaymentRequestResult> {
     assertPositiveAmount(input.amountAgorot);
-    await this.assertCustomerAllowed(input.customerRef);
-    const fingerprint = JSON.stringify([input.amountAgorot, input.currency, input.customerRef, !!input.savePaymentMethod]);
+    const fingerprint = JSON.stringify([input.amountAgorot, input.currency, input.customerRef]);
     const idemKey = `idem:${input.idempotencyKey}`;
 
     const existing = await this.store.get<IdempotencyEntry>(idemKey);
@@ -82,7 +66,6 @@ export class MockPaymentProvider implements PaymentProvider {
       amountAgorot: input.amountAgorot,
       status: "PENDING",
       refundedAgorot: 0,
-      savePaymentMethod: !!input.savePaymentMethod,
     };
     // קודם תופסים את מפתח ה-idempotency ורק אחר כך כותבים את התשלום, כדי שבקשות מקבילות לא ייצרו תשלומים יתומים
     const won = await this.store.putIfAbsent<IdempotencyEntry>(idemKey, { fingerprint, paymentId: payment.providerPaymentId });
@@ -102,7 +85,6 @@ export class MockPaymentProvider implements PaymentProvider {
       amountAgorot: p.amountAgorot,
       refundedAgorot: p.refundedAgorot,
       failureCode: p.failureCode,
-      savedPaymentMethod: p.savedPaymentMethod,
     };
   }
 
@@ -141,30 +123,6 @@ export class MockPaymentProvider implements PaymentProvider {
     return result;
   }
 
-  async chargeSavedMethod(input: ChargeSavedMethodInput): Promise<ChargeResult> {
-    assertPositiveAmount(input.amountAgorot);
-    await this.assertCustomerAllowed(input.customerRef);
-    const fingerprint = JSON.stringify([input.token, input.amountAgorot, input.currency, input.customerRef]);
-    const idemKey = `idem:${input.idempotencyKey}`;
-    const existing = await this.store.get<IdempotencyEntry>(idemKey);
-    if (existing) return this.resumeCharge(existing, fingerprint);
-
-    const token = await this.store.get<TokenEntry>(`token:${input.token}`);
-    const declined = !token || token.declined;
-    const payment: MockPayment = {
-      providerPaymentId: `mock_pay_${randomUUID()}`,
-      amountAgorot: input.amountAgorot,
-      status: declined ? "FAILED" : "SUCCEEDED",
-      refundedAgorot: 0,
-      savePaymentMethod: false,
-      failureCode: declined ? "card_declined" : undefined,
-    };
-    const won = await this.store.putIfAbsent<IdempotencyEntry>(idemKey, { fingerprint, paymentId: payment.providerPaymentId });
-    if (!won) return this.resumeCharge((await this.store.get<IdempotencyEntry>(idemKey))!, fingerprint);
-    await this.store.put(`pay:${payment.providerPaymentId}`, payment);
-    return { providerPaymentId: payment.providerPaymentId, status: payment.status, failureCode: payment.failureCode };
-  }
-
   async parseWebhook(input: WebhookInput): Promise<PaymentWebhookEvent> {
     const signature = input.headers[MOCK_SIGNATURE_HEADER];
     if (!signature || !signaturesMatch(signature, this.sign(input.rawBody))) {
@@ -187,7 +145,7 @@ export class MockPaymentProvider implements PaymentProvider {
     return { eventId: event.eventId, type: event.type, providerPaymentId: event.providerPaymentId };
   }
 
-  // ---- כלי בדיקה/פיתוח (קיימים רק ב-Mock) ----
+  // ---- כלי בדיקה ----
 
   /** מדמה את הלקוח שסיים את עמוד התשלום המאובטח של הספק */
   async completeCheckout(providerPaymentId: string, outcome: "success" | "failure"): Promise<void> {
@@ -198,35 +156,8 @@ export class MockPaymentProvider implements PaymentProvider {
       p.failureCode = "card_declined";
     } else {
       p.status = "SUCCEEDED";
-      if (p.savePaymentMethod) {
-        const token = `mock_tok_${randomUUID()}`;
-        await this.store.put<TokenEntry>(`token:${token}`, { declined: false });
-        p.savedPaymentMethod = { token, last4: "4242", brand: "mock", expiry: "12/99" };
-      }
     }
     await this.store.put(`pay:${p.providerPaymentId}`, p);
-  }
-
-  /** טוקן מדומה קיים ולא נדחה. מכיר רק טוקנים שהונפקו כאן (mock_tok_), לעולם לא טוקן של ספק אחר */
-  async isPaymentMethodUsable(token: string): Promise<boolean> {
-    if (!token.startsWith("mock_tok_")) return false;
-    const entry = await this.store.get<TokenEntry>(`token:${token}`);
-    return !!entry && !entry.declined;
-  }
-
-  /**
-   * מנפיק אמצעי תשלום מדומה לבדיקות בלבד, בלי כרטיס ובלי תשלום. הטוקן מתחיל ב-mock_tok_ וניתן לחיוב רק ע"י ספק ה-Mock.
-   * אינו חלק מחוזה הספק: ספק אמיתי שומר אמצעי תשלום רק דרך עמוד התשלום המאובטח שלו.
-   */
-  async issueSandboxToken(): Promise<SavedPaymentMethod> {
-    const token = `mock_tok_${randomUUID()}`;
-    await this.store.put<TokenEntry>(`token:${token}`, { declined: false });
-    return { token, last4: "4242", brand: "mock", expiry: "12/99" };
-  }
-
-  /** גורם לחיובים עתידיים באמצעי השמור להידחות */
-  async declineToken(token: string): Promise<void> {
-    await this.store.put<TokenEntry>(`token:${token}`, { declined: true });
   }
 
   /** בונה גוף וכותרות של webhook חתום, כפי שספק היה שולח */
@@ -254,14 +185,6 @@ export class MockPaymentProvider implements PaymentProvider {
       throw new IdempotencyConflictError("מפתח idempotency כבר שימש לבקשה עם פרמטרים שונים");
     }
     return this.toRequestResult(await this.mustGet(entry.paymentId));
-  }
-
-  private async resumeCharge(entry: IdempotencyEntry, fingerprint: string): Promise<ChargeResult> {
-    if (entry.fingerprint !== fingerprint) {
-      throw new IdempotencyConflictError("מפתח idempotency כבר שימש לחיוב עם פרמטרים שונים");
-    }
-    const p = await this.mustGet(entry.paymentId);
-    return { providerPaymentId: p.providerPaymentId, status: p.status, failureCode: p.failureCode };
   }
 
   private toRequestResult(p: MockPayment): PaymentRequestResult {

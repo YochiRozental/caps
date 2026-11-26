@@ -14,8 +14,6 @@ export interface PaymentsGate {
   loaded: boolean;
   /** זרימת התשלום פעילה בסביבה זו. ברירת המחדל: סגורה */
   enabled: boolean;
-  /** פאנל התשלום המדומה מותר (Mock בסביבת פיתוח מקומית בלבד) */
-  sandbox: boolean;
 }
 
 /**
@@ -23,16 +21,16 @@ export interface PaymentsGate {
  * כל כשל (רשת, שגיאה) נחשב כסגור.
  */
 export function usePaymentsGate(): PaymentsGate {
-  const [gate, setGate] = useState<PaymentsGate>({ loaded: false, enabled: false, sandbox: false });
+  const [gate, setGate] = useState<PaymentsGate>({ loaded: false, enabled: false });
   useEffect(() => {
     let cancelled = false;
     fetch("/api/payments/status")
       .then(async (res) => {
-        if (!res.ok) return { enabled: false, sandbox: false };
-        const body = (await res.json()) as { enabled?: boolean; sandbox?: boolean };
-        return { enabled: body.enabled === true, sandbox: body.sandbox === true };
+        if (!res.ok) return { enabled: false };
+        const body = (await res.json()) as { enabled?: boolean };
+        return { enabled: body.enabled === true };
       })
-      .catch(() => ({ enabled: false, sandbox: false }))
+      .catch(() => ({ enabled: false }))
       .then((g) => {
         if (!cancelled) setGate({ loaded: true, ...g });
       });

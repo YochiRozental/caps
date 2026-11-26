@@ -60,6 +60,7 @@ export async function POST(request: Request) {
 
       const body = await request.json().catch(() => null);
       const hours = Number(body?.hours);
+      const workshop = body?.workshop === true;
       const clientKey = typeof body?.clientKey === "string" ? body.clientKey : "";
       if (!Number.isInteger(hours)) {
         outcome = "invalid";
@@ -67,7 +68,7 @@ export async function POST(request: Request) {
       }
 
       try {
-        const started = await startPackagePurchase({ userId: session.user.id, hours, clientKey, provider });
+        const started = await startPackagePurchase({ userId: session.user.id, hours, workshop, clientKey, provider });
         // האם להציג את דף התשלום ב-iframe. דומיין שידוע שאוסר הטמעה (grow.link) מוכרע בלי בקשת רשת
         let checkoutEmbeddable: boolean | undefined;
         if (started.checkoutUrl) {
@@ -80,7 +81,7 @@ export async function POST(request: Request) {
         }
         outcome = started.checkoutUrl ? "checkout" : started.status.toLowerCase();
         return NextResponse.json(
-          { ...withoutProviderInternals(started, provider), checkoutEmbeddable },
+          { ...withoutProviderInternals(started), checkoutEmbeddable },
           { headers: { "Server-Timing": timing.serverTimingHeader() } }
         );
       } catch (err) {

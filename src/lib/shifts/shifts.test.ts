@@ -2,8 +2,8 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type { PrismaClient } from "@/generated/prisma/client";
 
-// בדיקות משמרות קבועות מול PostgreSQL מקומי ייעודי: יצירה אטומית, זכאות, תמחור, חיוב ראשון וחודשי, Cron, כישלונות, תקופת חסד,
-// השעיה, סגירת יום, בקשות שינוי וביטול. רצות רק כש-SHIFTS_TEST_DATABASE_URL מוגדר ומצביע על מסד מקומי בשם *_test. דוגמה:
+// בדיקות משמרות קבועות מול PostgreSQL מקומי ייעודי: יצירה אטומית ע"י מנהל, זכאות, תמחור, שלושה חיובים חודשיים בתשלום ידני
+// (אין כרטיס שמור ואין חיוב אוטומטי), ריצה יומית, איחור בתשלום, תקופת חסד, השעיה, סגירת יום, בקשות שינוי וביטול. רצות רק כש-SHIFTS_TEST_DATABASE_URL מוגדר ומצביע על מסד מקומי בשם *_test. דוגמה:
 //   SHIFTS_TEST_DATABASE_URL=postgresql://user:pass@localhost:5433/clinics_shifts_test npm test
 const testUrl = process.env.SHIFTS_TEST_DATABASE_URL;
 
@@ -19,7 +19,7 @@ const SITE_PASSWORD = "Site-Pass-9xQ!";
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
 
-// "היום" הקבוע של הבדיקות: יום שני 15.2.2027, שהוא גם תאריך ההתחלה (לכן החיוב הראשון מתבצע מיד). משמרת של יום שני:
+// "היום" הקבוע של הבדיקות: יום שני 15.2.2027, שהוא גם תאריך ההתחלה (לכן מועד החיוב הראשון הוא היום). משמרת של יום שני:
 // שלושה חיובים ב-15.2, 15.3 ו-15.4; סיום ב-14.5. 13 מפגשים: 4 בתקופה הראשונה (15.2–14.3), 5 בשנייה (15.3–14.4), 4 בשלישית (15.4–14.5)
 const NOW = new Date("2027-02-15T09:00:00Z");
 const START = "2027-02-15";
@@ -28,7 +28,6 @@ const START = "2027-02-15";
 // מחיר מופע (להחזר שמנהל אישר בלבד) = חודשי ÷ מפגשים בתקופה: 4 (120 ₪), 5 (96 ₪), 4 (120 ₪)
 const MONTHLY = 48000;
 const OCC_FEB = 12000;
-const OCC_MAR = 9600;
 const SESSIONS = 13;
 
 describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מקומי", { skip: !testUrl && "SHIFTS_TEST_DATABASE_URL לא מוגדר" }, () => {
@@ -41,10 +40,9 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
   let windowsDb: typeof import("@/lib/shifts/windows-db");
   let booking: typeof import("@/lib/booking");
   let payBooking: typeof import("@/lib/payments/booking-payment");
-  let methods: typeof import("@/lib/payments/saved-methods");
   let hoursDb: typeof import("@/lib/opening-hours-db");
   let pw: typeof import("@/lib/password");
-  let MockPaymentProvider: typeof import("@/lib/payments/mock-provider").MockPaymentProvider;
+  let MockPaymentProvider: typeof import("@/lib/payments/testing/mock-provider").MockPaymentProvider;
   let PrismaMockStore: typeof import("@/lib/payments/mock-store").PrismaMockStore;
   let jerusalemParts: typeof import("@/lib/opening-hours").jerusalemParts;
   let provider: InstanceType<typeof MockPaymentProvider>;
@@ -65,7 +63,6 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await prisma.cronRun.deleteMany({});
     await prisma.paymentAttempt.deleteMany({});
     await prisma.payment.deleteMany({});
-    await prisma.paymentMethod.deleteMany({});
     await prisma.debtSettlement.deleteMany({});
     await prisma.debt.deleteMany({});
     await prisma.appointment.deleteMany({});
@@ -86,13 +83,11 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     windowsDb = await import("@/lib/shifts/windows-db");
     booking = await import("@/lib/booking");
     payBooking = await import("@/lib/payments/booking-payment");
-    methods = await import("@/lib/payments/saved-methods");
     hoursDb = await import("@/lib/opening-hours-db");
     pw = await import("@/lib/password");
-    ({ MockPaymentProvider } = await import("@/lib/payments/mock-provider"));
+    ({ MockPaymentProvider } = await import("@/lib/payments/testing/mock-provider"));
     ({ PrismaMockStore } = await import("@/lib/payments/mock-store"));
     ({ jerusalemParts } = await import("@/lib/opening-hours"));
-    origCharge = MockPaymentProvider.prototype.chargeSavedMethod;
     await wipe();
     await prisma.user.deleteMany({ where: { name: { startsWith: "sh " } } });
   });
@@ -107,7 +102,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
       ["EVENING", "ערב", 19, 22, 50000],
     ] as const;
     for (const [i, [id, name, from, to, price]] of defaults.entries()) {
-      const data = { name, startMinutes: from * 60, endMinutes: to * 60, monthlyPriceAgorot: price, active: true, sortOrder: i + 1 };
+      const data = { name, startMinutes: from * 60, endMinutes: to * 60, monthlyPriceAgorot: price, workshopMonthlyPriceAgorot: price * 2, active: true, sortOrder: i + 1 };
       await prisma.shiftWindow.upsert({ where: { id }, update: data, create: { id, ...data } });
     }
   }
@@ -128,8 +123,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await mk("pending", { status: "PENDING" });
     await mk("female", { gender: "FEMALE" });
     await mk("admin", { role: "ADMIN", canBookShifts: false });
-    await mk("noCard");
-    for (const k of ["a", "b", "blocked", "pending", "female", "noPerm"]) await addCard(ids[k]);
+    await mk("c");
   });
 
   after(async () => {
@@ -140,44 +134,33 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
   });
 
   // ───────────── עזרים ─────────────
-  async function addCard(userId: string) {
-    const res = await methods.addMockCard({ userId, currentPassword: SITE_PASSWORD, provider });
-    assert.equal(res.status, "OK");
-  }
   type Over = Partial<Parameters<typeof svc.createShift>[0]>;
+  /** יצירה ע"י מנהל (הדרך היחידה ליצור משמרת): תשלום ידני, אין חיוב אוטומטי */
   const create = (userId: string, over: Over = {}) =>
-    svc.createShift({ userId, roomKey: "ROOM3", weekday: 1, windowId: "MORNING", startDate: START, clientKey: key(), provider, now: NOW, ...over });
+    svc.createShift({ userId, roomKey: "ROOM3", weekday: 1, windowId: "MORNING", startDate: START, clientKey: key(), createdById: ids.admin, now: NOW, ...over });
+  /** מנהל מתעד שהתשלום של תקופה התקבל (בסכום המדויק, בתאריך המועד) */
+  async function pay(shiftId: string, month: string) {
+    const charge = await chargeOf(shiftId, month);
+    const paidOn = charge.dueDate!;
+    await life.recordManualPayment({ chargeId: charge.id, adminId: ids.admin, amountAgorot: charge.amountAgorot, paidOn, confirm: true, now: new Date(`${paidOn}T10:00:00Z`) });
+  }
+  /** משמרת פעילה שהתשלום הראשון שלה תועד (המצב הרגיל אחרי קביעת משמרת) */
   async function createOk(userId = ids.a, over: Over = {}) {
     const res = await create(userId, over);
     assert.equal(res.status, "ACTIVE", JSON.stringify(res));
+    const first = await prisma.shiftCharge.findFirstOrThrow({ where: { shiftId: res.shiftId, isFirst: true } });
+    await pay(res.shiftId, first.month);
     return res.shiftId;
   }
   const cron = (now: Date, extra: Partial<Parameters<typeof bill.runMonthlyShiftBilling>[0]> = {}) =>
-    bill.runMonthlyShiftBilling({ provider, trigger: "test", now, ...extra });
+    bill.runMonthlyShiftBilling({ trigger: "test", now, ...extra });
   /** מועדי החיוב השני והשלישי (07:00 בשעון ירושלים) */
   const MARCH_15 = new Date("2027-03-15T05:00:00Z");
   const APRIL_15 = new Date("2027-04-15T05:00:00Z");
   const chargesOf = (shiftId: string) => prisma.shiftCharge.findMany({ where: { shiftId }, orderBy: { month: "asc" } });
   const chargeOf = (shiftId: string, month: string) => prisma.shiftCharge.findUniqueOrThrow({ where: { shiftId_month: { shiftId, month } } });
-  const providerPays = () => prisma.mockProviderRecord.count({ where: { key: { startsWith: "pay:" } } });
-
-  type ChargeFn = typeof MockPaymentProvider.prototype.chargeSavedMethod;
-  let origCharge: ChargeFn;
-  async function withCharge<T>(impl: ChargeFn, fn: () => Promise<T>) {
-    const orig = MockPaymentProvider.prototype.chargeSavedMethod;
-    MockPaymentProvider.prototype.chargeSavedMethod = impl;
-    try {
-      return await fn();
-    } finally {
-      MockPaymentProvider.prototype.chargeSavedMethod = orig;
-    }
-  }
-  /** חיוב שהספק דוחה בוודאות: מחייב טוקן שנדחה, כך שהספק מחזיר כישלון אמיתי */
-  const declineCharges: ChargeFn = async function (this: InstanceType<typeof MockPaymentProvider>, input) {
-    const t = await this.issueSandboxToken();
-    await this.declineToken(t.token);
-    return origCharge.call(this, { ...input, token: t.token });
-  };
+  /** תשלומים מול ספק עבור משמרות: תמיד 0 (אין חיוב אוטומטי) */
+  const shiftPayments = () => prisma.payment.count({ where: { purpose: "SHIFT_MONTH" } });
 
   // ───────────── זכאות ─────────────
 
@@ -203,27 +186,43 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await createOk(ids.a, { roomKey: "ROOM4" });
   });
 
-  test("לקוח ללא כרטיס שמור, או עם כרטיס Mock שאינו שמיש: אין אישור משמרת ואין שמירת משבצות", async () => {
-    await life.setShiftEligibility({ adminId: ids.admin, userId: ids.noCard, allowed: true });
-    await assert.rejects(() => create(ids.noCard), { code: "NO_PAYMENT_METHOD" });
-    // כרטיס שנדחה אצל הספק אינו שמיש
-    const row = await prisma.paymentMethod.findFirstOrThrow({ where: { userId: ids.a } });
-    await provider.declineToken(row.token);
-    await assert.rejects(() => create(ids.a), { code: "NO_PAYMENT_METHOD" });
-    // כרטיס שנוצר כ-LIVE (לא sandbox) אינו נטען מול ספק Mock
-    await prisma.paymentMethod.updateMany({ where: { userId: ids.a }, data: { environment: "LIVE" } });
-    await assert.rejects(() => create(ids.a), { code: "NO_PAYMENT_METHOD" });
-    const c = { shifts: await prisma.shift.count({}), appts: await prisma.appointment.count({}), pays: await prisma.payment.count({}) };
-    assert.deepEqual(c, { shifts: 0, appts: 0, pays: 0 });
+  test("רק מנהל יוצר משמרת: לקוח אינו יוצר משמרת בעצמו (גם לא בשם אחר); אין כרטיס שמור ואין חיוב אוטומטי", async () => {
+    await assert.rejects(() => create(ids.a, { createdById: ids.a }), { code: "FORBIDDEN" }, "לקוח אינו יוצר משמרת לעצמו");
+    await assert.rejects(() => create(ids.c, { createdById: ids.a }), { code: "FORBIDDEN" }, "וגם לא בשם לקוח אחר");
+    assert.deepEqual([await prisma.shift.count({}), await prisma.appointment.count({})], [0, 0]);
+
+    const res = await create(ids.c);
+    assert.equal(res.status, "ACTIVE");
+    const shift = await prisma.shift.findUniqueOrThrow({ where: { id: res.shiftId } });
+    assert.deepEqual([shift.status, shift.createdById], ["ACTIVE", ids.admin]);
+    assert.equal(await prisma.auditLog.count({ where: { action: "shift.create_manual", entityId: res.shiftId } }), 1);
+    assert.deepEqual((await chargesOf(res.shiftId)).map((c) => c.status), ["PENDING", "PENDING", "PENDING"], "כל התשלומים ממתינים לתיעוד מנהל");
+    assert.equal(await prisma.payment.count({}), 0, "אין תשלום מול ספק");
   });
 
   // ───────────── יצירה, תמחור ותקופה ─────────────
 
-  test("יצירת משמרת לכל אחת מארבע המשבצות: מחיר חודשי קבוע, מפגשים כהזמנות מאושרות, שלושה חיובים והחיוב הראשון בלבד", async () => {
+  test("חדר סדנאות: המשמרת מתומחרת בכפול מהמחיר הרגיל של המשבצת, וחדר רגיל באותה משבצת במחיר הרגיל", async () => {
+    const regular = await create(ids.a, { windowId: "AFTERNOON", roomKey: "ROOM3" });
+    const workshop = await create(ids.b, { windowId: "AFTERNOON", roomKey: "WORKSHOP" });
+    assert.deepEqual([regular.status, workshop.status], ["ACTIVE", "ACTIVE"]);
+    const rows = await prisma.shift.findMany({ where: { id: { in: [regular.shiftId, workshop.shiftId] } } });
+    const monthly = (id: string) => rows.find((r) => r.id === id)!.monthlyPriceAgorot;
+    assert.equal(monthly(regular.shiftId), 60000);
+    assert.equal(monthly(workshop.shiftId), 120000);
+    assert.equal(monthly(workshop.shiftId), 2 * monthly(regular.shiftId));
+    const occ = await prisma.shiftOccurrence.findMany({ where: { shiftId: workshop.shiftId } });
+    assert.ok(occ.every((o) => o.priceAgorot > 0));
+    const regOcc = await prisma.shiftOccurrence.findMany({ where: { shiftId: regular.shiftId } });
+    const sum = (rows: { priceAgorot: number }[]) => rows.reduce((n, o) => n + o.priceAgorot, 0);
+    assert.ok(Math.abs(sum(occ) - 2 * sum(regOcc)) <= occ.length, "מחירי המופעים של סדנאות כפולים (עד עיגול לאגורה)");
+  });
+
+  test("יצירת משמרת לכל אחת מארבע המשבצות: מחיר חודשי קבוע, מפגשים כהזמנות מאושרות, ושלושה חיובים ממתינים לתשלום ידני", async () => {
     const expected: [string, string, number][] = [
       ["MORNING", "ROOM3", 48000],
       ["NOON", "ROOM4", 52500],
-      ["AFTERNOON", "WORKSHOP", 60000],
+      ["AFTERNOON", "WORKSHOP", 120000], // חדר סדנאות: כפול מהמחיר הרגיל של המשבצת (60000)
       ["EVENING", "ROOM2", 50000],
     ];
     for (const [windowId, roomKey, monthly] of expected) {
@@ -233,23 +232,20 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
       assert.equal(shift.status, "ACTIVE");
       assert.equal(shift.endDate, "2027-05-14", "שלושה חודשים מתאריך ההתחלה");
       assert.equal(shift.monthlyPriceAgorot, monthly);
-      assert.equal(shift.paymentMode, "AUTO");
       assert.equal(shift.occurrences.length, SESSIONS, `${windowId}: 13 ימי שני בין 15.2 ל-14.5`);
       assert.ok(shift.occurrences.every((o) => o.status === "SCHEDULED" && o.appointmentId));
-      // שלושה חיובים בדיוק, כל אחד בסכום הקבוע, במועדים שנגזרים מתאריך ההתחלה. רק הראשון שולם
+      // שלושה חיובים בדיוק, כל אחד בסכום הקבוע, במועדים שנגזרים מתאריך ההתחלה. אף אחד אינו נגבה אוטומטית
       assert.deepEqual(shift.charges.map((c) => [c.month, c.dueDate, c.amountAgorot, c.status]), [
-        ["2027-02", "2027-02-15", monthly, "PAID"],
+        ["2027-02", "2027-02-15", monthly, "PENDING"],
         ["2027-03", "2027-03-15", monthly, "PENDING"],
         ["2027-04", "2027-04-15", monthly, "PENDING"],
       ]);
       assert.deepEqual([shift.charges[0].isFirst, shift.charges[0].occurrenceCount], [true, 4]);
-      const pay = await prisma.payment.findUniqueOrThrow({ where: { id: shift.charges[0].paymentId! } });
-      assert.deepEqual([pay.purpose, pay.status, pay.amountAgorot, pay.environment], ["SHIFT_MONTH", "SUCCEEDED", monthly, "SANDBOX"]);
     }
     const appts = await prisma.appointment.findMany({ where: { source: "SHIFT" } });
     assert.equal(appts.length, 4 * SESSIONS);
     assert.ok(appts.every((a) => a.status === "CONFIRMED" && a.userId === ids.a));
-    assert.equal(await providerPays(), 4, "ארבעה חיובים ראשונים בדיוק");
+    assert.equal(await prisma.payment.count({}), 0, "אין חיוב אוטומטי: אין תשלום מול ספק");
   });
 
   test("שעות המופעים בשעון ירושלים, כולל מעבר לשעון קיץ (26.3.2027) באמצע התקופה", async () => {
@@ -261,80 +257,26 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     }
   });
 
-  test("אין חישוב יחסי: חיוב ראשון מלא גם כשהמפגש הראשון רחוק מתאריך ההתחלה; התחלה עתידית: החיוב הראשון בעת האישור, והשני והשלישי לפי תאריך ההתחלה", async () => {
+  test("אין חישוב יחסי: חיוב ראשון מלא גם כשהמפגש הראשון רחוק מתאריך ההתחלה; התחלה עתידית: מועד החיוב הראשון בעת האישור, והשני והשלישי לפי תאריך ההתחלה", async () => {
     // התחלה ביום רביעי 17.2: המפגש הראשון ב-22.2. החיוב הראשון מלא (480 ₪), לא יחסי
     const mid = await createOk(ids.a, { startDate: "2027-02-17" });
     const ch = await chargeOf(mid, "2027-02");
-    assert.deepEqual([ch.amountAgorot, ch.status, ch.dueDate], [MONTHLY, "PAID", "2027-02-15"], "נגבה בעת האישור (15.2)");
+    assert.deepEqual([ch.amountAgorot, ch.status, ch.dueDate], [MONTHLY, "PAID", "2027-02-15"], "מועדו בעת האישור (15.2)");
 
-    // התחלה עתידית (26.2): החיוב הראשון מתבצע מיד באישור, והמשמרת מאושרת רק אחריו
+    // התחלה עתידית (26.2): מועד החיוב הראשון הוא יום האישור, השני והשלישי חודש וחודשיים אחרי תאריך ההתחלה
     const future = await create(ids.b, { startDate: "2027-02-26", roomKey: "ROOM4" });
     assert.equal(future.status, "ACTIVE");
-    assert.deepEqual((await chargesOf(future.shiftId)).map((c) => [c.month, c.dueDate, c.status]), [["2027-02", "2027-02-15", "PAID"], ["2027-03", "2027-03-26", "PENDING"], ["2027-04", "2027-04-26", "PENDING"]]);
-    assert.equal(await prisma.payment.count({ where: { userId: ids.b } }), 1, "חיוב ראשון אחד, מיד");
+    assert.deepEqual((await chargesOf(future.shiftId)).map((c) => [c.month, c.dueDate, c.status]), [["2027-02", "2027-02-15", "PENDING"], ["2027-03", "2027-03-26", "PENDING"], ["2027-04", "2027-04-26", "PENDING"]]);
     const first = await chargeOf(future.shiftId, "2027-02");
     assert.deepEqual([first.isFirst, first.amountAgorot], [true, MONTHLY]);
 
-    // הריצה היומית לעולם אינה מחייבת שוב את הראשון, ואינה נוגעת בשני לפני מועדו (חודש אחרי תאריך ההתחלה)
-    await cron(new Date("2027-02-26T05:00:00Z"));
+    // הריצה היומית לעולם אינה מחייבת: היא רק מסמנת תשלום שלא התקבל במועד. השני אינו "באיחור" לפני מועדו
+    await pay(future.shiftId, "2027-02");
     await cron(new Date("2027-03-25T05:00:00Z"));
-    assert.equal(await prisma.payment.count({ where: { userId: ids.b } }), 1);
-    await cron(new Date("2027-03-26T05:00:00Z"));
-    assert.equal((await chargeOf(future.shiftId, "2027-03")).status, "PAID");
-    await cron(new Date("2027-04-26T05:00:00Z"));
-    assert.equal((await chargeOf(future.shiftId, "2027-04")).status, "PAID");
-    assert.equal(await prisma.payment.count({ where: { userId: ids.b } }), 3, "שלושה חיובים בדיוק");
-  });
-
-  test("התחלה עתידית וחיוב ראשון שנכשל: ההזמנה לא מאושרת והמשבצות משוחררות מיד", async () => {
-    const res = await withCharge(declineCharges, () => create(ids.a, { startDate: "2027-03-05" }));
-    assert.equal(res.status, "CHARGE_FAILED");
-    const shift = await prisma.shift.findUniqueOrThrow({ where: { id: res.shiftId } });
-    assert.equal(shift.status, "CANCELLED");
-    assert.equal(await prisma.appointment.count({ where: { source: "SHIFT", status: "CONFIRMED" } }), 0);
-    assert.equal((await chargeOf(res.shiftId, "2027-03")).status, "FAILED");
-    await createOk(ids.b, { startDate: "2027-03-05" }); // המשבצות פנויות
-  });
-
-  test("חיוב ראשון לא ודאי: המשבצות לא נשמרות ללא הגבלה. אחרי הזמן המותר מאמתים מול הספק (מאושר), ואם אי אפשר — משחררים וההכרעה נשארת למנהל", async () => {
-    // (א) נקטע לפני שהספק ענה: אין מזהה ספק, לכן אי אפשר לאמת. עד 24 שעות המשבצות שמורות, אחרי זה הן משוחררות
-    const failing: ChargeFn = async () => {
-      throw new Error("network down");
-    };
-    const a = await withCharge(failing, () => create(ids.a, { startDate: "2027-03-05" }));
-    assert.equal(a.status, "PENDING_REVIEW");
-    const created = (await prisma.shift.findUniqueOrThrow({ where: { id: a.shiftId } })).createdAt;
-    await cron(new Date(created.getTime() + 23 * HOUR));
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: a.shiftId } })).status, "PENDING", "בתוך הזמן המותר המשבצות שמורות");
-    const r = await cron(new Date(created.getTime() + 25 * HOUR));
-    assert.ok(r.outcome === "DONE" && r.summary.pendingReleased === 1 && r.summary.pendingActivated === 0, JSON.stringify(r));
-    const released = await prisma.shift.findUniqueOrThrow({ where: { id: a.shiftId } });
-    assert.deepEqual([released.status, released.cancelReason], ["CANCELLED", "first_charge_unconfirmed_timeout"]);
-    assert.equal(await prisma.appointment.count({ where: { source: "SHIFT", status: "CONFIRMED" } }), 0, "המשבצות שוחררו");
-    assert.equal((await chargeOf(a.shiftId, "2027-03")).status, "UNKNOWN", "החיוב נשאר לבירור מנהל, בלי חיוב חוזר");
-    assert.equal(await prisma.payment.count({ where: { userId: ids.a } }), 1);
-    await cron(new Date(created.getTime() + 49 * HOUR));
-    assert.equal(await prisma.payment.count({ where: { userId: ids.a } }), 1, "אין חיוב חוזר בעיוורון");
-    await createOk(ids.b, { startDate: "2027-03-05" });
-
-    // (ב) הספק כן חייב אך התשובה אבדה: יש מזהה ספק, ולכן האימות מצליח והמשמרת מאושרת (לא משוחררת)
-    await prisma.paymentMethod.deleteMany({ where: { userId: ids.female } });
-    await addCard(ids.female);
-    let providerPaymentId = "";
-    const chargeThenLose: ChargeFn = async function (this: InstanceType<typeof MockPaymentProvider>, input) {
-      const res = await origCharge.call(this, input);
-      providerPaymentId = res.providerPaymentId;
-      throw new Error("response lost");
-    };
-    const c = await withCharge(chargeThenLose, () => create(ids.female, { weekday: 2, startDate: "2027-03-05" }));
-    assert.equal(c.status, "PENDING_REVIEW");
-    const charge = await chargeOf(c.shiftId, "2027-03");
-    await prisma.payment.update({ where: { id: charge.paymentId! }, data: { providerPaymentId } });
-    const createdC = (await prisma.shift.findUniqueOrThrow({ where: { id: c.shiftId } })).createdAt;
-    const r2 = await cron(new Date(createdC.getTime() + 25 * HOUR));
-    assert.ok(r2.outcome === "DONE" && r2.summary.pendingActivated === 1 && r2.summary.pendingReleased === 0, JSON.stringify(r2));
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: c.shiftId } })).status, "ACTIVE");
-    assert.equal((await chargeOf(c.shiftId, "2027-03")).status, "PAID");
+    assert.equal((await chargeOf(future.shiftId, "2027-03")).status, "PENDING");
+    await cron(new Date("2027-03-27T05:00:00Z"));
+    assert.equal((await chargeOf(future.shiftId, "2027-03")).failureCode, "manual_payment_overdue", "יום אחרי המועד, בלי תשלום מתועד");
+    assert.equal(await shiftPayments(), 0, "אין שום חיוב מול ספק");
   });
 
   test("תאריכי חיוב חריגים: התחלה ב-31.1 -> 28.2 -> 31.3 (כל מועד ביחס לתאריך המקורי), ובדיוק שלושה חיובים", async () => {
@@ -344,19 +286,16 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const charges = await chargesOf(id);
     assert.deepEqual(charges.map((c) => [c.month, c.dueDate]), [["2027-01", "2027-01-31"], ["2027-02", "2027-02-28"], ["2027-03", "2027-03-31"]]);
     assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id } })).endDate, "2027-04-29", "31.1 + 3 חודשים = 30.4, והסיום יום לפני");
-    await cron(new Date("2027-02-27T05:00:00Z"));
-    assert.equal((await chargeOf(id, "2027-02")).status, "PENDING", "28.2 עוד לא הגיע");
     await cron(new Date("2027-02-28T05:00:00Z"));
-    assert.equal((await chargeOf(id, "2027-02")).status, "PAID");
-    await cron(new Date("2027-03-30T05:00:00Z"));
-    assert.equal((await chargeOf(id, "2027-03")).status, "PENDING");
-    await cron(new Date("2027-03-31T05:00:00Z"));
-    assert.equal((await chargeOf(id, "2027-03")).status, "PAID");
+    assert.equal((await chargeOf(id, "2027-02")).status, "PENDING", "ביום המועד עוד אין איחור");
+    await pay(id, "2027-02");
+    await pay(id, "2027-03");
     // אחרי סוף התקופה: אין חיוב רביעי, והמשמרת מסתיימת
     await cron(new Date("2027-05-01T05:00:00Z"));
     await cron(new Date("2027-06-01T05:00:00Z"));
     assert.equal((await chargesOf(id)).length, 3);
-    assert.equal(await prisma.payment.count({ where: { userId: ids.female, purpose: "SHIFT_MONTH" } }), 3);
+    assert.deepEqual((await chargesOf(id)).map((c) => c.status), ["PAID", "PAID", "PAID"]);
+    assert.equal(await shiftPayments(), 0);
     assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id } })).status, "ENDED");
   });
 
@@ -368,12 +307,12 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const byPeriod = occ.reduce<Record<string, number>>((m, o) => ({ ...m, [o.month]: (m[o.month] ?? 0) + 1 }), {});
     assert.deepEqual(byPeriod, { "2026-12": 5, "2027-01": 4, "2027-02": 4 });
     assert.deepEqual((await chargesOf(shiftId)).map((c) => [c.month, c.dueDate, c.amountAgorot]), [["2026-12", "2026-12-10", MONTHLY], ["2027-01", "2027-01-14", MONTHLY], ["2027-02", "2027-02-14", MONTHLY]]);
-    assert.equal((await chargeOf(shiftId, "2026-12")).status, "PAID", "הראשון נגבה בעת האישור (10.12), לפני תאריך ההתחלה");
-    await cron(new Date("2026-12-14T05:00:00Z"));
-    await cron(new Date("2027-01-14T05:00:00Z"));
+    assert.equal((await chargeOf(shiftId, "2026-12")).status, "PAID", "מועד הראשון בעת האישור (10.12), לפני תאריך ההתחלה");
+    await pay(shiftId, "2027-01");
+    await pay(shiftId, "2027-02");
     await cron(new Date("2027-02-14T05:00:00Z"));
     assert.deepEqual((await chargesOf(shiftId)).map((c) => c.status), ["PAID", "PAID", "PAID"]);
-    assert.equal(await prisma.payment.count({ where: { purpose: "SHIFT_MONTH" } }), 3);
+    assert.equal(await shiftPayments(), 0);
   });
 
   test("תאריך התחלה בעבר או רחוק מדי, ויום/משבצת לא תקינים נדחים", async () => {
@@ -402,7 +341,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const shiftId = await createOk();
     const skipped = await prisma.shiftOccurrence.findUniqueOrThrow({ where: { shiftId_date: { shiftId, date: "2027-03-08" } } });
     assert.deepEqual([skipped.status, skipped.appointmentId, skipped.makeupStatus], ["SKIPPED_CLOSED_DAY", null, "OWED"]);
-    await cron(MARCH_15);
+    await pay(shiftId, "2027-03");
     const march = await chargeOf(shiftId, "2027-03");
     assert.deepEqual([march.amountAgorot, march.status], [MONTHLY, "PAID"], "הסגירה אינה מפחיתה את החיוב: מחיר חודשי קבוע");
 
@@ -415,7 +354,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
 
   test("סגירת יום ביוזמת ההנהלה אחרי שהתקופה שולמה: דילוג, הזמנה מבוטלת, החדר מתפנה, שעה חלופית, ובלי החזר או שינוי חיוב", async () => {
     const shiftId = await createOk();
-    await cron(MARCH_15);
+    await pay(shiftId, "2027-03");
     const paid = await chargeOf(shiftId, "2027-03");
     assert.equal(paid.status, "PAID");
 
@@ -443,7 +382,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const credit = await prisma.credit.findUniqueOrThrow({ where: { id: withCredit.makeupCreditId! } });
     assert.deepEqual([credit.userId, credit.minutesTotal, credit.minutesRemaining, credit.reason], [ids.a, 240, 240, `shift_makeup:${occ.id}`]);
     assert.equal(await prisma.credit.count({ where: { userId: ids.a } }), 1, "הרצה חוזרת לא יצרה זיכוי נוסף");
-    const view = (await views.getMyShifts({ userId: ids.a, provider, now: new Date("2027-03-23T09:00:00Z") })).shifts[0];
+    const view = (await views.getMyShifts({ userId: ids.a, now: new Date("2027-03-23T09:00:00Z") })).shifts[0];
     assert.deepEqual(view.makeups.map((m) => [m.date, m.state, m.minutesTotal, m.minutesRemaining]), [["2027-03-22", "OPEN", 240, 240]]);
     assert.deepEqual([view.makeupOwed, view.makeupMinutesRemaining], [1, 240]);
     const regularOcc = await prisma.shiftOccurrence.findFirstOrThrow({ where: { shiftId, status: "SCHEDULED" } });
@@ -451,18 +390,18 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     assert.equal((await chargesOf(shiftId)).map((c) => c.amountAgorot).join(), [MONTHLY, MONTHLY, MONTHLY].join(), "שלושת החיובים לא השתנו");
   });
 
-  test("סגירת יום לפני שהתקופה חויבה, וגם אחרי כישלון חיוב: החיוב נשאר הסכום המלא הקבוע", async () => {
+  test("סגירת יום לפני שהתקופה שולמה, וגם אחרי שהתשלום לא התקבל במועד: החיוב נשאר הסכום המלא הקבוע", async () => {
     const shiftId = await createOk();
     const summary = await life.applyDayClosure({ date: "2027-04-12", adminId: ids.admin });
     assert.deepEqual([summary.skipped, summary.makeupOwed], [1, 1]);
-    await cron(MARCH_15);
+    await pay(shiftId, "2027-03");
     const march = await chargeOf(shiftId, "2027-03");
     assert.deepEqual([march.amountAgorot, march.status], [MONTHLY, "PAID"], "12.4 שייך לתקופה השנייה: החיוב עדיין מלא");
     assert.equal(march.occurrenceCount, 4, "מספר המפגשים בתקופה ירד (מידע בלבד)");
 
-    // חיוב שנכשל ואז יום נסגר: אין הפחתה ואין החזר
+    // תשלום שלא התקבל במועד ואז יום נסגר: אין הפחתה ואין החזר
     const b = await createOk(ids.b, { roomKey: "ROOM4" });
-    await withCharge(declineCharges, () => cron(new Date(MARCH_15.getTime() + DAY)));
+    await cron(new Date(MARCH_15.getTime() + DAY));
     assert.equal((await chargeOf(b, "2027-03")).status, "FAILED");
     const closure = await life.applyDayClosure({ date: "2027-03-22", adminId: ids.admin });
     assert.equal(closure.skipped, 2, "שתי המשמרות מופיעות ב-22.3");
@@ -495,9 +434,6 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
   test("שתי בקשות יצירה מקבילות לאותו חדר, יום ומשבצת: משמרת אחת בלבד, ללא חפיפה", async () => {
     for (let round = 0; round < 3; round++) {
       await wipe();
-      await prisma.paymentMethod.deleteMany({});
-      await addCard(ids.a);
-      await addCard(ids.b);
       const results = await Promise.allSettled([create(ids.a), create(ids.b)]);
       assert.equal(results.filter((r) => r.status === "fulfilled").length, 1, `סבב ${round}`);
       const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
@@ -507,7 +443,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     }
   });
 
-  test("שתי משמרות מקבילות בחדרים שונים מצליחות; ולחיצה כפולה (אותו מפתח) מחזירה את אותה משמרת בלי חיוב כפול", async () => {
+  test("שתי משמרות מקבילות בחדרים שונים מצליחות; ולחיצה כפולה (אותו מפתח) מחזירה את אותה משמרת בלי משמרת או חיובים כפולים", async () => {
     const [x, y] = await Promise.all([create(ids.a, { roomKey: "ROOM3" }), create(ids.b, { roomKey: "ROOM4" })]);
     assert.deepEqual([x.status, y.status], ["ACTIVE", "ACTIVE"]);
 
@@ -515,77 +451,27 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const results = await Promise.all(Array.from({ length: 4 }, () => create(ids.a, { clientKey: k, roomKey: "WORKSHOP" })));
     assert.equal(new Set(results.map((r) => r.shiftId)).size, 1);
     assert.equal(await prisma.shift.count({ where: { roomId: (await prisma.room.findUniqueOrThrow({ where: { key: "WORKSHOP" } })).id } }), 1);
-    assert.equal(await prisma.payment.count({ where: { userId: ids.a } }), 2, "חיוב ראשון אחד לכל משמרת");
+    const workshopShift = results[0].shiftId;
+    assert.equal((await chargesOf(workshopShift)).length, 3, "שלושה חיובים בלבד למשמרת שנוצרה פעם אחת");
+    assert.equal(await prisma.payment.count({}), 0);
   });
 
   // ───────────── כישלונות בחיוב הראשון ─────────────
 
-  test("חיוב ראשון שנכשל בוודאות: המשמרת לא מאושרת והמשבצות משוחררות", async () => {
-    const res = await withCharge(declineCharges, () => create(ids.a));
-    assert.equal(res.status, "CHARGE_FAILED");
-    const shift = await prisma.shift.findUniqueOrThrow({ where: { id: res.shiftId } });
-    assert.equal(shift.status, "CANCELLED");
-    assert.equal(await prisma.appointment.count({ where: { source: "SHIFT", status: "CONFIRMED" } }), 0);
-    assert.equal((await chargeOf(res.shiftId, "2027-02")).status, "FAILED");
-    assert.equal((await prisma.payment.findFirstOrThrow({})).status, "FAILED");
-    await createOk(ids.b); // החדר פנוי
-  });
-
-  test("חיוב ראשון במצב לא ידוע: המשבצות שמורות, אין חיוב חוזר אוטומטי, ובירור מנהל מכריע", async () => {
-    let calls = 0;
-    const counting: ChargeFn = async () => {
-      calls++;
-      throw new Error("network down");
-    };
-    const res = await withCharge(counting, () => create(ids.a));
-    assert.equal(res.status, "PENDING_REVIEW");
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: res.shiftId } })).status, "PENDING");
-    assert.equal((await chargeOf(res.shiftId, "2027-02")).status, "UNKNOWN");
-    assert.equal(await prisma.appointment.count({ where: { source: "SHIFT", status: "CONFIRMED" } }), SESSIONS, "המשבצות שמורות");
-    await assert.rejects(() => create(ids.b), { code: "CONFLICT" }, "שמורות גם מול אחרים");
-
-    // ריצת Cron ובקשה חוזרת לא מחייבות בעיוורון
-    await withCharge(counting, () => cron(new Date(Date.now() + HOUR)));
-    await withCharge(counting, () => create(ids.a, { clientKey: key() }).catch(() => undefined));
-    assert.equal(calls, 1, "ניסיון חיוב יחיד");
-    const unknownId = (await chargeOf(res.shiftId, "2027-02")).id;
-    await assert.rejects(() => life.resolveUnknownCharge({ chargeId: unknownId, adminId: ids.a, outcome: "PAID" }), { code: "FORBIDDEN" });
-    await life.resolveUnknownCharge({ chargeId: unknownId, adminId: ids.admin, outcome: "PAID", now: NOW });
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: res.shiftId } })).status, "ACTIVE");
-
-    // והכרעה "לא חויב" משחררת את המשבצות
-    const other = await withCharge(counting, () => create(ids.b, { roomKey: "ROOM4" }));
-    await life.resolveUnknownCharge({ chargeId: (await chargeOf(other.shiftId, "2027-02")).id, adminId: ids.admin, outcome: "NOT_CHARGED", now: NOW });
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: other.shiftId } })).status, "CANCELLED");
-    assert.equal(await prisma.appointment.count({ where: { roomId: (await prisma.room.findUniqueOrThrow({ where: { key: "ROOM4" } })).id, status: "CONFIRMED" } }), 0);
-  });
-
   // ───────────── חיוב חודשי ו-Cron ─────────────
 
-  test("שלושה חיובים בדיוק, כל אחד במועדו ובסכום הקבוע, פעם אחת בלבד; הרצה כפולה לא מחייבת; אין חיוב רביעי; המשמרת מסתיימת", async () => {
+  test("שלושה חיובים בדיוק, כל אחד במועדו ובסכום הקבוע; הריצה היומית אינה מחייבת; אין חיוב רביעי; המשמרת מסתיימת כשהכול שולם", async () => {
     const shiftId = await createOk();
     assert.equal((await cron(new Date("2027-02-20T05:00:00Z"))).outcome, "DONE");
-    assert.equal((await prisma.payment.count({ where: { userId: ids.a } })), 1, "פברואר כבר חויב; אין חיוב מוקדם של התקופות הבאות");
-    await cron(new Date("2027-03-14T05:00:00Z"));
-    assert.equal((await chargeOf(shiftId, "2027-03")).status, "PENDING", "יום לפני מועד החיוב: אין חיוב");
-
-    const r1 = await cron(MARCH_15);
-    assert.ok(r1.outcome === "DONE" && r1.status === "SUCCEEDED" && r1.summary.charged === 1);
+    await cron(MARCH_15);
     const march = await chargeOf(shiftId, "2027-03");
-    assert.deepEqual([march.status, march.occurrenceCount, march.amountAgorot, march.attempt, march.dueDate], ["PAID", 5, MONTHLY, 1, "2027-03-15"]);
-    assert.equal((await prisma.payment.findUniqueOrThrow({ where: { id: march.paymentId! } })).idempotencyKey, `shiftcharge:${shiftId}:2027-03:a1`);
+    assert.deepEqual([march.status, march.occurrenceCount, march.amountAgorot, march.dueDate, march.paymentId], ["PENDING", 5, MONTHLY, "2027-03-15", null], "ביום המועד: ממתין לתשלום, בלי חיוב");
+    assert.equal(await shiftPayments(), 0);
 
-    const payments = await prisma.payment.count({});
-    const r2 = await cron(MARCH_15);
-    assert.ok(r2.outcome === "DONE" && r2.summary.charged === 0);
-    await cron(new Date("2027-03-25T05:00:00Z"));
-    assert.equal(await prisma.payment.count({}), payments, "הרצות חוזרות באותה תקופה: אין חיוב נוסף");
-    assert.equal(await providerPays(), 2);
-
-    await cron(APRIL_15);
+    await pay(shiftId, "2027-03");
+    await pay(shiftId, "2027-04");
     const april = await chargeOf(shiftId, "2027-04");
     assert.deepEqual([april.status, april.occurrenceCount, april.amountAgorot], ["PAID", 4, MONTHLY]);
-    assert.equal((await chargesOf(shiftId)).length, 3);
     // סיום: אחרי סוף התקופה (14.5) והכול שולם. אין חיוב רביעי בשום ריצה
     await cron(new Date("2027-05-14T05:00:00Z"));
     assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE", "ב-14.5 התקופה עוד לא הסתיימה");
@@ -593,171 +479,126 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await cron(new Date("2027-06-15T05:00:00Z"));
     assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ENDED");
     assert.equal((await chargesOf(shiftId)).length, 3);
-    assert.equal(await prisma.payment.count({ where: { userId: ids.a, purpose: "SHIFT_MONTH" } }), 3);
+    assert.equal(await shiftPayments(), 0);
     assert.equal(await prisma.shiftOccurrence.count({ where: { shiftId, date: { gt: "2027-05-14" } } }), 0);
   });
 
-  test("חיוב שמועדו עבר ולא בוצע מזוהה ומחויב בריצה הבאה", async () => {
+  test("הרצות Cron מקבילות וריצה נטושה: סימון איחור יחיד לכל חיוב, ו-RUNNING ישנה נלקחת", async () => {
     const shiftId = await createOk();
-    const r = await cron(APRIL_15); // 15.3 לא רץ מעולם
-    assert.ok(r.outcome === "DONE" && r.summary.missedFound === 1 && r.summary.charged === 2, JSON.stringify(r));
-    assert.deepEqual((await chargesOf(shiftId)).map((c) => [c.month, c.status]), [["2027-02", "PAID"], ["2027-03", "PAID"], ["2027-04", "PAID"]]);
-  });
-
-  test("הרצות Cron מקבילות וריצה נטושה: חיוב יחיד לכל חודש, ו-RUNNING ישנה נלקחת", async () => {
-    const shiftId = await createOk();
-    const results = await Promise.all([cron(MARCH_15), cron(MARCH_15), cron(MARCH_15)]);
+    const MARCH_16 = new Date(MARCH_15.getTime() + DAY);
+    const results = await Promise.all([cron(MARCH_16), cron(MARCH_16), cron(MARCH_16)]);
     assert.ok(results.every((r) => r.outcome === "ALREADY_RUNNING" || r.outcome === "DONE"));
-    assert.equal(await prisma.payment.count({ where: { purpose: "SHIFT_MONTH" } }), 2);
-    assert.equal((await chargeOf(shiftId, "2027-03")).attempt, 1);
+    const march = await chargeOf(shiftId, "2027-03");
+    assert.equal(march.status, "FAILED");
+    assert.equal(await prisma.auditLog.count({ where: { action: "shift_charge.manual_overdue", entityId: march.id } }), 1, "סימון אחד בלבד");
 
     await prisma.cronRun.deleteMany({});
-    await prisma.cronRun.create({ data: { job: "shift-billing", period: "2027-03", trigger: "dead", status: "RUNNING", startedAt: new Date(MARCH_15.getTime() - 3 * HOUR) } });
-    const live = await cron(MARCH_15);
+    await prisma.cronRun.create({ data: { job: "shift-billing", period: "2027-03", trigger: "dead", status: "RUNNING", startedAt: new Date(MARCH_16.getTime() - 3 * HOUR) } });
+    const live = await cron(MARCH_16);
     assert.equal(live.outcome, "DONE");
     assert.equal((await prisma.cronRun.findFirstOrThrow({ where: { trigger: "dead" } })).status, "FAILED");
-    await prisma.cronRun.create({ data: { job: "shift-billing", period: "2027-03", trigger: "fresh", status: "RUNNING", startedAt: MARCH_15 } });
-    assert.equal((await cron(MARCH_15)).outcome, "ALREADY_RUNNING");
+    await prisma.cronRun.create({ data: { job: "shift-billing", period: "2027-03", trigger: "fresh", status: "RUNNING", startedAt: MARCH_16 } });
+    assert.equal((await cron(MARCH_16)).outcome, "ALREADY_RUNNING");
   });
 
-  test("הרצות מתועדות; סריקה נפרדת מביצוע; כישלון חלקי בפריט אחד לא עוצר את האחרים", async () => {
+  test("הרצות מתועדות; רק חיוב שלא שולם במועד מסומן כאיחור, ושאר המשמרות לא מושפעות", async () => {
     const a = await createOk(ids.a);
     const b = await createOk(ids.b, { roomKey: "ROOM4" });
-    const scan = await bill.scanDueCharges(prisma, MARCH_15);
-    assert.deepEqual(scan.due.map((d) => [d.shiftId, d.month, d.kind]).sort(), [[a, "2027-03", "MONTHLY"], [b, "2027-03", "MONTHLY"]].sort());
-    assert.equal((await chargeOf(a, "2027-03")).status, "PENDING", "הסריקה לא חייבה כלום");
-    assert.equal(await prisma.payment.count({ where: { purpose: "SHIFT_MONTH", userId: ids.a } }), 1);
-
-    // הכרטיס של b נמחק: החיוב שלו נכשל בוודאות, ושל a מצליח
-    await prisma.paymentMethod.updateMany({ where: { userId: ids.b }, data: { active: false } });
-    const run = await cron(MARCH_15);
+    await pay(a, "2027-03");
+    const run = await cron(new Date(MARCH_15.getTime() + DAY));
     assert.ok(run.outcome === "DONE");
-    if (run.outcome === "DONE") assert.deepEqual([run.summary.charged, run.summary.failed], [1, 1]);
+    if (run.outcome === "DONE") assert.deepEqual([run.summary.manualOverdue, run.summary.suspended, run.summary.errors], [1, 0, 0]);
     assert.equal((await chargeOf(a, "2027-03")).status, "PAID");
-    assert.deepEqual([(await chargeOf(b, "2027-03")).status, (await chargeOf(b, "2027-03")).failureCode], ["FAILED", "no_usable_method"]);
+    assert.deepEqual([(await chargeOf(b, "2027-03")).status, (await chargeOf(b, "2027-03")).failureCode], ["FAILED", "manual_payment_overdue"]);
     const row = await prisma.cronRun.findFirstOrThrow({ orderBy: { startedAt: "desc" } });
-    assert.ok(row.finishedAt && row.status === "SUCCEEDED" && (row.summary as { charged: number }).charged === 1);
+    assert.ok(row.finishedAt && row.status === "SUCCEEDED" && (row.summary as { manualOverdue: number }).manualOverdue === 1);
     assert.equal((await views.recentCronRuns(5)).length >= 1, true);
-  });
-
-  test("התאוששות: ריצה שנקטעה אחרי חיוב אצל הספק מסתיימת בלי חיוב שני; נקטעה לפני הספק -> לא ידוע, בלי חיוב עיוור", async () => {
-    const shiftId = await createOk();
-    // ריצה שנקטעה אחרי שהספק חייב: תשלום אצל הספק עם אותו מפתח, אבל החיוב אצלנו נשאר PENDING
-    const token = (await prisma.paymentMethod.findFirstOrThrow({ where: { userId: ids.a } })).token;
-    const key1 = bill.chargeKey(shiftId, "2027-03", 1);
-    const charged = await provider.chargeSavedMethod({ token, amountAgorot: MONTHLY, currency: "ILS", description: "x", idempotencyKey: key1, customerRef: ids.a });
-    const pay = await prisma.payment.create({
-      data: { userId: ids.a, purpose: "SHIFT_MONTH", amountAgorot: MONTHLY, status: "PENDING", environment: "SANDBOX", provider: "mock", idempotencyKey: key1, providerPaymentId: charged.providerPaymentId },
-    });
-    await prisma.shiftCharge.update({ where: { shiftId_month: { shiftId, month: "2027-03" } }, data: { attempt: 1, claimedAt: new Date(MARCH_15.getTime() - HOUR), paymentId: pay.id } });
-    const before = await providerPays();
-    await cron(MARCH_15);
-    assert.equal((await chargeOf(shiftId, "2027-03")).status, "PAID");
-    assert.equal(await providerPays(), before, "לא בוצע חיוב שני אצל הספק");
-
-    // ריצה שנקטעה אחרי יצירת התשלום אך לפני שהגיע לספק: לא ידוע, ללא חיוב
-    const b = await createOk(ids.b, { roomKey: "ROOM4" });
-    const beforeBlind = await providerPays();
-    const key2 = bill.chargeKey(b, "2027-03", 1);
-    await prisma.payment.create({ data: { userId: ids.b, purpose: "SHIFT_MONTH", amountAgorot: MONTHLY, status: "PENDING", environment: "SANDBOX", provider: "mock", idempotencyKey: key2 } });
-    await prisma.shiftCharge.update({ where: { shiftId_month: { shiftId: b, month: "2027-03" } }, data: { attempt: 1, claimedAt: new Date(MARCH_15.getTime() - HOUR) } });
-    await cron(MARCH_15);
-    const c = await chargeOf(b, "2027-03");
-    assert.deepEqual([c.status, c.failureCode], ["UNKNOWN", "interrupted"]);
-    assert.equal(await providerPays(), beforeBlind, "גם כאן אין חיוב עיוור");
-  });
-
-  test("תקלת רשת בחיוב החודשי: UNKNOWN, ללא חיוב חוזר בריצות הבאות, עד בירור", async () => {
-    const shiftId = await createOk();
-    let calls = 0;
-    const counting: ChargeFn = async () => {
-      calls++;
-      throw new Error("timeout");
-    };
-    await withCharge(counting, () => cron(MARCH_15));
-    assert.equal((await chargeOf(shiftId, "2027-03")).status, "UNKNOWN");
-    await withCharge(counting, () => cron(new Date("2027-03-16T05:00:00Z")));
-    await withCharge(counting, () => cron(new Date("2027-03-20T05:00:00Z")));
-    assert.equal(calls, 1);
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE", "לא מושעית בגלל מצב לא ידוע");
-    const unknownCharge = await chargeOf(shiftId, "2027-03");
-    await assert.rejects(() => life.retryChargeAsAdmin({ chargeId: unknownCharge.id, adminId: ids.admin, provider }), { code: "CONFLICT" });
-    const r = await cron(new Date("2027-03-20T05:00:00Z"));
-    assert.ok(r.outcome === "DONE" && r.summary.needsReview === 1);
+    assert.equal(await shiftPayments(), 0);
   });
 
   // ───────────── כישלון, חסד והשעיה ─────────────
 
-  test("כישלון חיוב חודשי: תקופת חסד של 7 ימים (המשמרת פעילה), ניסיון חוזר פעם ביום, ואז השעיה בלי שחרור משבצות", async () => {
+  test("תשלום שתועד בתקופת החסד מבטל אותה; השעיה אחרי החסד; חידוש מושעית מחייב הסדרה או ויתור מפורש של מנהל", async () => {
     const shiftId = await createOk();
-    await withCharge(declineCharges, () => cron(MARCH_15));
-    const failed = await chargeOf(shiftId, "2027-03");
-    assert.equal(failed.status, "FAILED");
-    assert.equal(failed.graceUntil!.getTime() - MARCH_15.getTime(), 7 * DAY);
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE");
-
-    // אותו יום: אין ניסיון נוסף. יום אחרי: ניסיון חוזר (נכשל שוב), המשמרת עדיין פעילה, ותקופת החסד לא התארכה
-    await withCharge(declineCharges, () => cron(new Date(MARCH_15.getTime() + 2 * HOUR)));
-    assert.equal((await chargeOf(shiftId, "2027-03")).attempt, 1);
-    await withCharge(declineCharges, () => cron(new Date(MARCH_15.getTime() + DAY + HOUR)));
-    const retried = await chargeOf(shiftId, "2027-03");
-    assert.deepEqual([retried.status, retried.attempt], ["FAILED", 2]);
-    assert.equal(retried.graceUntil!.getTime(), failed.graceUntil!.getTime());
-    assert.equal((await prisma.payment.count({ where: { purpose: "SHIFT_MONTH", status: "FAILED" } })), 2);
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE");
-
-    // תקופת החסד חלפה בלי הסדרה -> SUSPENDED. המשבצות נשמרות, אין ביטול
-    const r = await withCharge(declineCharges, () => cron(new Date(MARCH_15.getTime() + 7 * DAY + HOUR)));
-    assert.ok(r.outcome === "DONE" && r.summary.suspended === 1);
-    const shift = await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } });
-    assert.deepEqual([shift.status, shift.suspensionReason], ["SUSPENDED", "payment_failed:2027-03"]);
-    assert.equal(await prisma.appointment.count({ where: { source: "SHIFT", status: "CONFIRMED" } }), SESSIONS, "המשבצות נשמרות");
-    assert.equal(await prisma.shiftOccurrence.count({ where: { shiftId, status: "SCHEDULED" } }), SESSIONS);
-    await assert.rejects(() => create(ids.b), { code: "CONFLICT" }, "המשבצת מושעית אך חסומה לאחרים");
-    const view = (await views.getMyShifts({ userId: ids.a, provider, now: new Date(MARCH_15.getTime() + 8 * DAY) })).shifts[0];
-    assert.deepEqual([view.status, view.usable], ["SUSPENDED", false]);
-
-    // משמרת מושעית אינה מחויבת בחודשים הבאים
-    await cron(APRIL_15);
-    const april = await chargeOf(shiftId, "2027-04");
-    assert.deepEqual([april.status, april.paymentId], ["PENDING", null], "משמרת מושעית אינה מחויבת בתקופות הבאות");
-  });
-
-  test("כישלון שהוסדר בתקופת החסד מבטל אותה; חידוש מושעית מחייב הסדרה או ויתור מפורש של מנהל", async () => {
-    const shiftId = await createOk();
-    await withCharge(declineCharges, () => cron(MARCH_15));
-    const r = await cron(new Date(MARCH_15.getTime() + DAY + HOUR)); // כרטיס תקין: הניסיון החוזר מצליח
-    assert.ok(r.outcome === "DONE" && r.summary.retriedPaid === 1);
+    const MARCH_16 = new Date(MARCH_15.getTime() + DAY);
+    await cron(MARCH_16);
+    const overdue = await chargeOf(shiftId, "2027-03");
+    assert.equal(overdue.status, "FAILED");
+    assert.equal(overdue.graceUntil!.getTime() - MARCH_16.getTime(), 7 * DAY);
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE", "בתקופת החסד המשמרת פעילה");
+    await life.recordManualPayment({ chargeId: overdue.id, adminId: ids.admin, amountAgorot: MONTHLY, paidOn: "2027-03-17", confirm: true, now: new Date("2027-03-17T09:00:00Z") });
     const paid = await chargeOf(shiftId, "2027-03");
-    assert.deepEqual([paid.status, paid.graceUntil], ["PAID", null]);
+    assert.deepEqual([paid.status, paid.graceUntil, paid.failureCode], ["PAID", null, null]);
+    await cron(new Date(MARCH_16.getTime() + 8 * DAY));
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE", "החוב הוסדר: אין השעיה");
+    await pay(shiftId, "2027-04"); // המשמרת הראשונה משולמת במלואה ואינה חלק מתרחיש ההשעיה שלהלן
 
-    // השעיה, ואז חידוש
+    // השעיה (מרץ ואפריל לא שולמו), ואז חידוש. המשבצות נשמרות ואינן פנויות לאחרים
     const b = await createOk(ids.b, { roomKey: "ROOM4" });
-    await withCharge(declineCharges, () => cron(APRIL_15));
-    await withCharge(declineCharges, () => cron(new Date(APRIL_15.getTime() + 8 * DAY)));
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: b } })).status, "SUSPENDED");
+    const APRIL_16 = new Date(APRIL_15.getTime() + DAY);
+    await cron(APRIL_16);
+    const r = await cron(new Date(APRIL_16.getTime() + 7 * DAY + HOUR));
+    assert.ok(r.outcome === "DONE" && r.summary.suspended === 1, JSON.stringify(r));
+    const suspended = await prisma.shift.findUniqueOrThrow({ where: { id: b } });
+    assert.equal(suspended.status, "SUSPENDED");
+    assert.match(suspended.suspensionReason ?? "", /^payment_failed:2027-0[34]$/);
+    assert.equal(await prisma.shiftOccurrence.count({ where: { shiftId: b, status: "SCHEDULED" } }), SESSIONS, "המשבצות נשמרות");
+    await assert.rejects(() => create(ids.c, { roomKey: "ROOM4" }), { code: "CONFLICT" }, "המשבצת מושעית אך חסומה לאחרים");
+    const view = (await views.getMyShifts({ userId: ids.b, now: new Date(APRIL_16.getTime() + 8 * DAY) })).shifts[0];
+    assert.deepEqual([view.status, view.usable], ["SUSPENDED", false]);
     await assert.rejects(() => life.resumeShift({ shiftId: b, adminId: ids.a }), { code: "FORBIDDEN" });
     await assert.rejects(() => life.resumeShift({ shiftId: b, adminId: ids.admin }), { code: "CONFLICT" }, "חוב לא מוסדר");
 
-    // ניסיון חוזר ע"י מנהל מסדיר את החיובים אך אינו מחדש את המשמרת בעצמו: חידוש הוא החלטה נפרדת
-    const failedCharges = await prisma.shiftCharge.findMany({ where: { shiftId: b, status: "FAILED" } });
-    assert.equal(failedCharges.length, 2, "מרץ (שהוחמץ) ואפריל");
-    for (const failedCharge of failedCharges) {
-      const retried = await life.retryChargeAsAdmin({ chargeId: failedCharge.id, adminId: ids.admin, provider, now: new Date(APRIL_15.getTime() + 9 * DAY) });
-      assert.equal(retried.outcome, "PAID");
+    // תיעוד התשלומים מסדיר את החוב אך אינו מחדש את המשמרת בעצמו: חידוש הוא החלטה נפרדת
+    const unpaid = await prisma.shiftCharge.findMany({ where: { shiftId: b, status: "FAILED" } });
+    assert.equal(unpaid.length, 2, "מרץ ואפריל");
+    for (const charge of unpaid) {
+      await life.recordManualPayment({ chargeId: charge.id, adminId: ids.admin, amountAgorot: MONTHLY, paidOn: "2027-04-25", confirm: true, now: new Date("2027-04-25T09:00:00Z") });
       assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: b } })).status, "SUSPENDED");
     }
-    await life.resumeShift({ shiftId: b, adminId: ids.admin, now: new Date(APRIL_15.getTime() + 9 * DAY) });
+    await life.resumeShift({ shiftId: b, adminId: ids.admin, now: new Date("2027-04-25T10:00:00Z") });
     const resumed = await prisma.shift.findUniqueOrThrow({ where: { id: b } });
     assert.deepEqual([resumed.status, resumed.suspendedAt, resumed.resumedById], ["ACTIVE", null, ids.admin]);
 
     // ויתור מפורש: מסמן את החיוב כמוותר ומחדש
     const c = await createOk(ids.a, { roomKey: "WORKSHOP" });
-    await withCharge(declineCharges, () => cron(APRIL_15));
-    await withCharge(declineCharges, () => cron(new Date(APRIL_15.getTime() + 8 * DAY)));
+    await cron(MARCH_16);
+    await cron(new Date(MARCH_16.getTime() + 8 * DAY));
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: c } })).status, "SUSPENDED");
     const res = await life.resumeShift({ shiftId: c, adminId: ids.admin, waiveUnpaid: true, note: "הסכמה" });
     assert.ok(res.waived >= 1);
     assert.equal((await prisma.shiftCharge.findFirstOrThrow({ where: { shiftId: c, status: "WAIVED" } })).resolvedById, ids.admin);
+    assert.equal(await shiftPayments(), 0);
+  });
+
+  test("רגרסיה: חידוש מושעית אינו נחסם בחיוב עתידי שמועדו טרם הגיע, ואינו מוותר עליו; חיוב שמועדו הגיע עדיין חוסם", async () => {
+    const shiftId = await createOk();
+    const MARCH_16 = new Date(MARCH_15.getTime() + DAY);
+    await cron(MARCH_16);
+    await cron(new Date(MARCH_16.getTime() + 7 * DAY + HOUR));
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "SUSPENDED");
+    assert.equal((await chargeOf(shiftId, "2027-04")).status, "PENDING", "אפריל (15.4) עתידי");
+
+    // מרץ (שמועדו הגיע) עדיין לא שולם: חוסם
+    const RESUME_AT = new Date("2027-03-25T10:00:00Z");
+    await assert.rejects(() => life.resumeShift({ shiftId, adminId: ids.admin, now: RESUME_AT }), { code: "CONFLICT" });
+
+    // מרץ שולם: החידוש מצליח למרות שאפריל עדיין ממתין, ואפריל נשאר לגבייה במועדו (לא נמחל)
+    await life.recordManualPayment({ chargeId: (await chargeOf(shiftId, "2027-03")).id, adminId: ids.admin, amountAgorot: MONTHLY, paidOn: "2027-03-25", confirm: true, now: RESUME_AT });
+    const res = await life.resumeShift({ shiftId, adminId: ids.admin, now: RESUME_AT });
+    assert.equal(res.waived, 0);
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE");
+    const april = await chargeOf(shiftId, "2027-04");
+    assert.deepEqual([april.status, april.resolvedById], ["PENDING", null]);
+
+    // ויתור בחידוש: רק על מה שמועדו הגיע; החיוב העתידי לא נמחל
+    const b = await createOk(ids.b, { roomKey: "ROOM4" });
+    await cron(MARCH_16);
+    await cron(new Date(MARCH_16.getTime() + 7 * DAY + HOUR));
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: b } })).status, "SUSPENDED");
+    const waived = await life.resumeShift({ shiftId: b, adminId: ids.admin, waiveUnpaid: true, note: "הסכמה", now: RESUME_AT });
+    assert.equal(waived.waived, 1, "רק מרץ");
+    assert.deepEqual((await chargesOf(b)).map((c) => [c.month, c.status]), [["2027-02", "PAID"], ["2027-03", "WAIVED"], ["2027-04", "PENDING"]]);
   });
 
   // ───────────── בקשות שינוי וביטול ─────────────
@@ -793,7 +634,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
 
   test("אישור בקשת ביטול: מפגשים מהתקופה שטרם שולמה מבוטלים, תקופות ששולמו נשארות בלי החזר, וההיסטוריה נשמרת", async () => {
     const shiftId = await createOk();
-    await cron(MARCH_15); // התקופה השנייה שולמה
+    await pay(shiftId, "2027-03"); // התקופה השנייה שולמה
     const req = await life.createShiftRequest({ userId: ids.a, shiftId, kind: "CANCEL" });
     const res = await life.decideShiftRequest({ requestId: req.id, adminId: ids.admin, decision: "APPROVE", provider, now: new Date("2027-03-20T09:00:00Z") });
     assert.deepEqual([res.status, res.appliedFrom, res.cancelledOccurrences], ["APPROVED", "2027-04-15", 4]);
@@ -805,31 +646,27 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await cron(APRIL_15);
     const april = await chargeOf(shiftId, "2027-04");
     assert.deepEqual([april.status, april.paymentId], ["WAIVED", null], "התקופה שבוטלה כולה אינה מחויבת");
-    assert.equal(await prisma.payment.count({ where: { userId: ids.a, purpose: "SHIFT_MONTH" } }), 2, "אין חיוב שלישי");
+    assert.equal(await shiftPayments(), 0, "אין חיוב מול ספק");
     assert.equal(await prisma.shiftOccurrence.count({ where: { shiftId } }), SESSIONS);
   });
 
-  test("אישור ביטול עם החזר מפורש לתקופה ששולמה: החזר חלקי למפגשים שבוטלו, פעם אחת", async () => {
+  test("אישור ביטול עם בקשת החזר לתקופה ששולמה ידנית: אין החזר אוטומטי דרך ספק (התשלום לא עבר בו), והמפגשים מסומנים לטיפול ידני", async () => {
     const shiftId = await createOk();
-    await cron(MARCH_15);
+    await pay(shiftId, "2027-03");
     const req = await life.createShiftRequest({ userId: ids.a, shiftId, kind: "CANCEL" });
     const res = await life.decideShiftRequest({
       requestId: req.id, adminId: ids.admin, decision: "APPROVE", effectiveFrom: "2027-03-22", refundCharged: true, provider, now: new Date("2027-03-20T09:00:00Z"),
     });
     assert.equal(res.cancelledOccurrences, 4 + 4, "22.3, 29.3, 5.4 ו-12.4 (תקופה ששולמה) ואחריהם ארבעת מפגשי התקופה השלישית");
-    assert.equal(res.adjust?.refundedAgorot, 4 * OCC_MAR);
+    assert.deepEqual([res.adjust?.refundedAgorot, res.adjust?.refundFailures], [0, 4], "ארבעה מפגשים ששולמו ידנית: ההחזר נעשה ידנית ע\"י ההנהלה");
     const march = await chargeOf(shiftId, "2027-03");
-    assert.equal(march.refundedAgorot, 4 * OCC_MAR);
-    const payment = await prisma.payment.findUniqueOrThrow({ where: { id: march.paymentId! } });
-    assert.equal((await provider.getPaymentStatus(payment.providerPaymentId!)).refundedAgorot, 4 * OCC_MAR);
-    // החזר נפרד לכל מפגש שבוטל (אידמפוטנטי לפי מפגש), ובסך הכול בדיוק מחיר ארבעת המפגשים
-    assert.equal(await prisma.refund.count({}), 4);
-    assert.equal((await prisma.refund.aggregate({ _sum: { amountAgorot: true } }))._sum.amountAgorot, 4 * OCC_MAR);
+    assert.deepEqual([march.status, march.refundedAgorot], ["PAID", 0]);
+    assert.equal(await prisma.refund.count({}), 0);
   });
 
   test("אישור בקשת שינוי: מוחלף באטומיות מהתקופה שטרם שולמה; התנגשות או תקופה ששולמה מבטלות הכול; מחיר המשבצת החדשה חל מכאן", async () => {
     const shiftId = await createOk();
-    await cron(MARCH_15);
+    await pay(shiftId, "2027-03");
     const now = new Date("2027-03-20T09:00:00Z");
 
     // שינוי לתקופה ששולמה נדחה
@@ -857,8 +694,10 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     assert.equal(april.length, 4);
     assert.ok(april.every((o) => o.priceAgorot === 13125 && jerusalemParts(o.startTime).minutes === 11 * 60));
     assert.equal(await prisma.shiftOccurrence.count({ where: { shiftId, month: "2027-03", status: "SCHEDULED" } }), 5, "התקופה ששולמה לא שונתה");
-    await cron(APRIL_15);
-    assert.equal((await chargeOf(shiftId, "2027-04")).amountAgorot, 52500, "החיוב השלישי לפי מחיר המשבצת החדשה (קבוע)");
+    const april3 = await chargeOf(shiftId, "2027-04");
+    assert.deepEqual([april3.amountAgorot, april3.occurrenceCount, april3.status], [52500, 4, "PENDING"], "החיוב השלישי עודכן במעמד האישור למחיר המשבצת החדשה (קבוע)");
+    await life.recordManualPayment({ chargeId: april3.id, adminId: ids.admin, amountAgorot: 52500, paidOn: "2027-04-15", confirm: true, now: new Date("2027-04-15T09:00:00Z") });
+    assert.equal((await chargeOf(shiftId, "2027-04")).status, "PAID", "תשלום ידני בסכום החדש מתקבל");
     assert.equal((await chargeOf(shiftId, "2027-03")).amountAgorot, MONTHLY, "התקופה ששולמה נשארת");
   });
 
@@ -1029,7 +868,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await life.scheduleMakeupSession({ occurrenceId: occ.id, adminId: ids.admin, roomKey: "ROOM1", ...slot("2027-03-12", 9, 30) });
     assert.deepEqual([await remaining(), (await prisma.shiftOccurrence.findUniqueOrThrow({ where: { id: occ.id } })).makeupStatus], [0, "ARRANGED"]);
     await assert.rejects(() => life.scheduleMakeupSession({ occurrenceId: occ.id, adminId: ids.admin, roomKey: "ROOM1", ...slot("2027-03-12", 14, 15) }), { code: "CONFLICT" });
-    const view = (await views.getMyShifts({ userId: ids.a, provider, now: new Date("2027-03-09T09:00:00Z") })).shifts[0];
+    const view = (await views.getMyShifts({ userId: ids.a, now: new Date("2027-03-09T09:00:00Z") })).shifts[0];
     assert.deepEqual([view.makeups[0].state, view.makeups[0].minutesRemaining, view.makeupOwed], ["USED", 0, 0]);
     assert.equal(await prisma.auditLog.count({ where: { action: "shift_makeup.scheduled", entityId: occ.id } }) >= 3, true);
     assert.equal((await prisma.shiftCharge.findMany({ where: { shiftId: occ.shiftId } })).every((c) => c.amountAgorot === MONTHLY && c.refundedAgorot === 0), true, "החיובים לא השתנו");
@@ -1049,7 +888,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const expired = await closedOccurrence(ids.b, { roomKey: "ROOM4" }, "2027-03-08");
     await prisma.credit.update({ where: { id: expired.credit.id }, data: { expiresAt: new Date(Date.now() - HOUR) } });
     await assert.rejects(() => life.scheduleMakeupSession({ occurrenceId: expired.occ.id, adminId: ids.admin, roomKey: "ROOM2", startTime: new Date("2027-03-09T09:00:00+02:00"), endTime: new Date("2027-03-09T10:00:00+02:00") }), { code: "CONFLICT" });
-    assert.equal((await views.getMyShifts({ userId: ids.b, provider, now: new Date() })).shifts[0].makeups[0].state, "EXPIRED");
+    assert.equal((await views.getMyShifts({ userId: ids.b, now: new Date() })).shifts[0].makeups[0].state, "EXPIRED");
 
     // מימוש עצמי של הלקוח: החזקה ואישור מהיתרה (אותו מסלול של כל יתרת דקות), בלי ניצול כפול
     const own = await closedOccurrence(ids.female, { weekday: 2, roomKey: "ROOM1" }, "2027-03-09");
@@ -1057,28 +896,31 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const confirmed = await payBooking.confirmBookingFromBalance({ appointmentId: hold.id, userId: ids.female, provider, now: NOW });
     assert.equal(confirmed.outcome, "CONFIRMED");
     assert.equal((await prisma.credit.findUniqueOrThrow({ where: { id: own.credit.id } })).minutesRemaining, own.credit.minutesTotal - 60);
-    const view = (await views.getMyShifts({ userId: ids.female, provider, now: NOW })).shifts[0];
+    const view = (await views.getMyShifts({ userId: ids.female, now: NOW })).shifts[0];
     assert.deepEqual([view.makeups[0].state, view.makeups[0].minutesRemaining, view.makeupMinutesRemaining], ["OPEN", own.credit.minutesTotal - 60, own.credit.minutesTotal - 60]);
   });
 
-  test("שעות חלופיות: משמרת שממתינה לחיוב הראשון אינה מקבלת זיכוי; זיכוי ניתן רק כשהיא מאושרת, ולא בכלל אם נכשלה", async () => {
-    await hoursDb.replaceDate("2027-03-08", { closed: true, note: "חג" });
-    const failing: ChargeFn = async () => {
-      throw new Error("network down");
-    };
-    const pending = await withCharge(failing, () => create(ids.a));
-    assert.equal(pending.status, "PENDING_REVIEW");
+  test("שעות חלופיות: משמרת ישנה שממתינה לתשלום הראשון אינה מקבלת זיכוי; זיכוי ניתן כשהיא מאושרת, ולא בכלל אם בוטלה", async () => {
+    // משמרות חדשות מאושרות מיד; מצב PENDING קיים רק בנתונים מלפני הסרת החיוב האוטומטי, ולכן נוצר כאן ישירות
+    const pending = await create(ids.a);
+    await prisma.shift.update({ where: { id: pending.shiftId }, data: { status: "PENDING" } });
+    await life.applyDayClosure({ date: "2027-03-08", adminId: ids.admin, now: NOW });
     const occ = await prisma.shiftOccurrence.findUniqueOrThrow({ where: { shiftId_date: { shiftId: pending.shiftId, date: "2027-03-08" } } });
     assert.deepEqual([occ.makeupStatus, occ.makeupCreditId], ["OWED", null]);
-    assert.equal(await prisma.credit.count({ where: { userId: ids.a } }), 0, "אין זיכוי לפני אישור החיוב הראשון");
-    await life.resolveUnknownCharge({ chargeId: (await chargeOf(pending.shiftId, "2027-02")).id, adminId: ids.admin, outcome: "PAID", now: NOW });
+    assert.equal(await prisma.credit.count({ where: { userId: ids.a } }), 0, "אין זיכוי לפני אישור התשלום הראשון");
+    await pay(pending.shiftId, "2027-02");
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: pending.shiftId } })).status, "ACTIVE", "תיעוד התשלום הראשון מאשר את המשמרת");
     const granted = await prisma.credit.findMany({ where: { userId: ids.a } });
     assert.deepEqual(granted.map((c) => c.minutesTotal), [240], "אחרי האישור ניתן זיכוי");
-    await life.resolveUnknownCharge.length; // הפונקציה קיימת
 
-    const failedRes = await withCharge(declineCharges, () => create(ids.b, { roomKey: "ROOM4" }));
-    assert.equal(failedRes.status, "CHARGE_FAILED");
-    const none = await prisma.shiftOccurrence.findUniqueOrThrow({ where: { shiftId_date: { shiftId: failedRes.shiftId, date: "2027-03-08" } } });
+    // משמרת ישנה שהתשלום הראשון שלה במצב לא ידוע, והוכרע "לא חויב": משוחררת, בלי זיכוי
+    const failed = await create(ids.b, { roomKey: "ROOM4" });
+    await prisma.shift.update({ where: { id: failed.shiftId }, data: { status: "PENDING" } });
+    await prisma.shiftCharge.update({ where: { shiftId_month: { shiftId: failed.shiftId, month: "2027-02" } }, data: { status: "UNKNOWN" } });
+    await life.applyDayClosure({ date: "2027-03-08", adminId: ids.admin, now: NOW });
+    await life.resolveUnknownCharge({ chargeId: (await chargeOf(failed.shiftId, "2027-02")).id, adminId: ids.admin, outcome: "NOT_CHARGED", now: NOW });
+    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: failed.shiftId } })).status, "CANCELLED");
+    const none = await prisma.shiftOccurrence.findUniqueOrThrow({ where: { shiftId_date: { shiftId: failed.shiftId, date: "2027-03-08" } } });
     assert.deepEqual([none.makeupStatus, none.makeupCreditId], [null, null]);
     assert.equal(await prisma.credit.count({ where: { userId: ids.b } }), 0);
   });
@@ -1155,7 +997,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     const waived = await life.waiveOccurrenceMakeup({ occurrenceId: occ.id, adminId: ids.admin, note: "ויתור", now: day });
     assert.equal(waived.waivedMinutes, 120, "רק היתרה שטרם נוצלה מבוטלת");
     assert.equal((await creditNow()).minutesRemaining, 0);
-    const view = (await views.getMyShifts({ userId: ids.a, provider, now: day })).shifts[0];
+    const view = (await views.getMyShifts({ userId: ids.a, now: day })).shifts[0];
     assert.deepEqual([view.makeups[0].state, view.makeupMinutesRemaining, view.makeupOwed], ["WAIVED", 0, 0]);
 
     // ביטול (24 שעות ומעלה) אחרי הוויתור: הדקות אינן חוזרות, ואין זיכוי חדש, וההזמנה כן מבוטלת
@@ -1229,7 +1071,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
   // ───────────── תשלום ידני שלא התקבל במועד ─────────────
 
   test("תשלום ידני שלא התקבל במועד נכנס למנגנון החובות: תקופת חסד של 7 ימים, השעיה, וניקוי באישור מנהל; הכול ביומן הביקורת", async () => {
-    const res = await create(ids.noCard, { paymentMode: "MANUAL", createdById: ids.admin });
+    const res = await create(ids.c);
     const shiftId = res.shiftId;
     assert.equal(await prisma.auditLog.count({ where: { action: "shift.create_manual", entityId: shiftId } }), 1);
 
@@ -1246,8 +1088,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     assert.equal(await prisma.auditLog.count({ where: { action: "shift_charge.manual_overdue", entityId: overdue.id } }), 1);
     await cron(new Date("2027-02-16T15:00:00Z"));
     assert.equal(await prisma.auditLog.count({ where: { action: "shift_charge.manual_overdue", entityId: overdue.id } }), 1, "אי-איחור כפול");
-    assert.equal(await prisma.payment.count({ where: { userId: ids.noCard } }), 0, "אין שום חיוב אוטומטי");
-    await assert.rejects(() => life.retryChargeAsAdmin({ chargeId: overdue.id, adminId: ids.admin, provider }), { code: "CONFLICT" }, "אין ניסיון חיוב חוזר במשמרת ידנית");
+    assert.equal(await prisma.payment.count({ where: { userId: ids.c } }), 0, "אין שום חיוב אוטומטי");
 
     // הכספים: החוב מופיע כחוב שטרם נגבה
     const sf = await views.listShiftsAdmin({ status: "ACTIVE" }, undefined, overdueAt);
@@ -1272,30 +1113,16 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     assert.equal(await prisma.auditLog.count({ where: { action: "shift_charge.manual_payment", entityId: overdue.id } }), 1);
   });
 
-  test("משמרת אוטומטית אינה נכנסת למסלול האיחור הידני, ותשלום ידני ממתין אינו מסומן כשולם מעצמו", async () => {
-    const auto = await createOk(ids.a);
-    const manual = (await create(ids.noCard, { paymentMode: "MANUAL", createdById: ids.admin, roomKey: "ROOM4" })).shiftId;
-    const r = await cron(new Date("2027-03-20T05:00:00Z"));
-    assert.ok(r.outcome === "DONE");
-    assert.equal((await chargeOf(auto, "2027-03")).status, "PAID", "אוטומטית: חויבה במועד");
-    assert.equal((await chargeOf(manual, "2027-03")).status, "FAILED", "ידנית: לא התקבל — חוב");
-    assert.notEqual((await chargeOf(manual, "2027-03")).status, "PAID");
-    assert.equal(await prisma.payment.count({ where: { userId: ids.noCard } }), 0);
-  });
-
   // ───────────── שער ורגרסיה ─────────────
 
-  test("שער סגור כברירת מחדל: בלי SHIFTS_ENABLED או בלי ספק תקף אין ספק משמרות", () => {
+  test("שער סגור כברירת מחדל: בלי SHIFTS_ENABLED או בלי ספק תקף אין ספק משמרות; mock אינו ספק באתר", () => {
     assert.equal(gate.getShiftsProvider({}), null);
     assert.equal(gate.getShiftsProvider({ SHIFTS_ENABLED: "true" }), null, "דגל פתוח בלי ספק תקף");
-    assert.equal(gate.getShiftsProvider({ SHIFTS_ENABLED: "false", PAYMENT_PROVIDER: "mock", PAYMENT_ENVIRONMENT: "sandbox", PAYMENT_MOCK_ENABLED: "true", PAYMENT_WEBHOOK_SECRET: SECRET, DATABASE_URL: testUrl } as never), null);
-    const open = gate.getShiftsProvider({ SHIFTS_ENABLED: "true", PAYMENT_PROVIDER: "mock", PAYMENT_ENVIRONMENT: "sandbox", PAYMENT_MOCK_ENABLED: "true", PAYMENT_WEBHOOK_SECRET: SECRET, DATABASE_URL: testUrl } as never);
-    assert.equal(open?.name, "mock");
-    // בסביבה חיה (production) ה-Mock נשאר חסום גם עם כל הדגלים
-    assert.equal(
-      gate.getShiftsProvider({ NODE_ENV: "production", SHIFTS_ENABLED: "true", PAYMENT_PROVIDER: "mock", PAYMENT_ENVIRONMENT: "sandbox", PAYMENT_MOCK_ENABLED: "true", PAYMENT_WEBHOOK_SECRET: SECRET, DATABASE_URL: testUrl } as never),
-      null
-    );
+    const legacyMock = { PAYMENT_PROVIDER: "mock", PAYMENT_ENVIRONMENT: "sandbox", PAYMENT_MOCK_ENABLED: "true", PAYMENT_MOCK_ALLOW_DEPLOYED: "true", PAYMENT_WEBHOOK_SECRET: SECRET, DATABASE_URL: testUrl };
+    assert.equal(gate.getShiftsProvider({ SHIFTS_ENABLED: "true", ...legacyMock } as never), null, "ספק הבדיקות אינו זמין לאתר");
+    const grow = { PAYMENT_PROVIDER: "grow", PAYMENT_ENVIRONMENT: "sandbox", GROW_USER_ID: "biz1", GROW_PAGE_CODE: "page1", GROW_SUCCESS_URL: "https://example.com/s", GROW_CANCEL_URL: "https://example.com/c" };
+    assert.equal(gate.getShiftsProvider({ SHIFTS_ENABLED: "false", ...grow } as never), null);
+    assert.equal(gate.getShiftsProvider({ SHIFTS_ENABLED: "true", ...grow } as never)?.name, "grow");
   });
 
   test("רגרסיה: הזמנות רגילות, תשלומי הזמנה וביטולים ממשיכים לעבוד; מופע משמרת אינו ניתן לביטול בודד ואינו ניתן לתפיסה", async () => {
@@ -1319,13 +1146,12 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
   test("תצוגת לקוח: מחיר חודשי וסך שלושה חודשים, מועדי שלושת החיובים, מפגשים קרובים, מצב תשלום, וללא נתוני משתמש אחר", async () => {
     await createOk(ids.a);
     await createOk(ids.b, { roomKey: "ROOM4" });
-    const mine = await views.getMyShifts({ userId: ids.a, provider, now: NOW });
+    const mine = await views.getMyShifts({ userId: ids.a, now: NOW });
     assert.equal(mine.shifts.length, 1);
     assert.equal(mine.eligible, true);
-    assert.equal(mine.hasUsableCard, true);
     const s = mine.shifts[0];
     assert.deepEqual([s.status, s.usable, s.occurrencePriceAgorot, s.counts.scheduled], ["ACTIVE", true, OCC_FEB, SESSIONS]);
-    assert.deepEqual([s.monthlyPriceAgorot, s.totalAgorot, s.paymentMode, s.makeupOwed], [MONTHLY, 3 * MONTHLY, "AUTO", 0]);
+    assert.deepEqual([s.monthlyPriceAgorot, s.totalAgorot, s.makeupOwed], [MONTHLY, 3 * MONTHLY, 0]);
     assert.deepEqual(
       s.months.map((m) => [m.month, m.dueDate, m.count, m.amountAgorot, m.chargeStatus]),
       [["2027-02", "2027-02-15", 4, MONTHLY, "PAID"], ["2027-03", "2027-03-15", 5, MONTHLY, "PENDING"], ["2027-04", "2027-04-15", 4, MONTHLY, "PENDING"]]
@@ -1334,7 +1160,7 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     assert.equal(s.charges.length, 3);
     assert.ok(s.upcoming.length > 0 && s.upcoming.length <= 6);
     assert.ok(!JSON.stringify(mine).includes(ids.b));
-    const noPerm = await views.getMyShifts({ userId: ids.noPerm, provider, now: NOW });
+    const noPerm = await views.getMyShifts({ userId: ids.noPerm, now: NOW });
     assert.equal(noPerm.eligible, false);
     const admin = await views.listShiftsAdmin({ roomKey: "ROOM4" });
     assert.deepEqual(admin.map((r) => r.user.id), [ids.b]);
@@ -1345,26 +1171,21 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
 
   // ───────────── תשלום ידני ─────────────
 
-  test("תשלום ידני: רק מנהל יוצר משמרת ידנית, אין חיוב אוטומטי, ותשלום מסומן כשולם רק באישור מפורש, בסכום המדויק ובתאריך תקין", async () => {
-    // לקוח בלי כרטיס שמור (noCard) לא יכול להזמין בעצמו, וגם לא לבחור תשלום ידני בעצמו
-    await assert.rejects(() => create(ids.noCard), { code: "NO_PAYMENT_METHOD" });
-    await assert.rejects(() => create(ids.noCard, { paymentMode: "MANUAL" }), { code: "FORBIDDEN" }, "לקוח אינו בוחר תשלום ידני");
-    await assert.rejects(() => create(ids.noCard, { paymentMode: "MANUAL", createdById: ids.a }), { code: "FORBIDDEN" }, "גם לא בשם לקוח אחר");
-
-    const res = await create(ids.noCard, { paymentMode: "MANUAL", createdById: ids.admin });
+  test("תשלום ידני: אין חיוב אוטומטי, ותשלום מסומן כשולם רק באישור מפורש, בסכום המדויק ובתאריך תקין", async () => {
+    const res = await create(ids.c);
     assert.equal(res.status, "ACTIVE");
     const shiftId = res.shiftId;
     const shift = await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } });
-    assert.deepEqual([shift.status, shift.paymentMode, shift.paymentMethodId, shift.createdById], ["ACTIVE", "MANUAL", null, ids.admin]);
+    assert.deepEqual([shift.status, shift.createdById], ["ACTIVE", ids.admin]);
     assert.deepEqual((await chargesOf(shiftId)).map((c) => [c.month, c.dueDate, c.amountAgorot, c.status]), [
       ["2027-02", "2027-02-15", MONTHLY, "PENDING"],
       ["2027-03", "2027-03-15", MONTHLY, "PENDING"],
       ["2027-04", "2027-04-15", MONTHLY, "PENDING"],
     ]);
 
-    // ריצות חיוב אוטומטיות לעולם לא נוגעות במשמרת ידנית, גם אחרי שמועד החיוב עבר
+    // הריצה היומית לעולם אינה מחייבת, גם אחרי שמועד החיוב עבר
     await cron(new Date("2027-02-16T05:00:00Z"));
-    assert.equal(await prisma.payment.count({ where: { userId: ids.noCard } }), 0);
+    assert.equal(await prisma.payment.count({ where: { userId: ids.c } }), 0);
     const late = await chargeOf(shiftId, "2027-02");
     assert.deepEqual([late.status, late.failureCode], ["FAILED", "manual_payment_overdue"], "תשלום ידני שלא התקבל במועד הוא חוב (אין חיוב אוטומטי)");
     assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE", "בתקופת החסד המשמרת פעילה");
@@ -1386,10 +1207,9 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await assert.rejects(() => life.recordManualPayment(base), { code: "CONFLICT" }, "אי אפשר לתעד פעמיים");
     const audit = await prisma.auditLog.findMany({ where: { entityType: "ShiftCharge", entityId: c1.id, action: "shift_charge.manual_payment" } });
     assert.equal(audit.length, 1);
-    assert.deepEqual([audit[0].adminId, audit[0].userId, audit[0].outcome], [ids.admin, ids.noCard, "ok"]);
+    assert.deepEqual([audit[0].adminId, audit[0].userId, audit[0].outcome], [ids.admin, ids.c, "ok"]);
 
-    const view = (await views.getMyShifts({ userId: ids.noCard, provider, now: new Date("2027-02-17T09:00:00Z") })).shifts[0];
-    assert.equal(view.paymentMode, "MANUAL");
+    const view = (await views.getMyShifts({ userId: ids.c, now: new Date("2027-02-17T09:00:00Z") })).shifts[0];
     assert.deepEqual(view.months[0].manual, { amountAgorot: MONTHLY, paidOn: "2027-02-16", reference: "קבלה 17" });
 
     // תיעוד שני החיובים האחרים; בסוף התקופה המשמרת מסתיימת, בלי חיוב רביעי
@@ -1399,26 +1219,6 @@ describe("משמרות קבועות וחיוב חודשי: מול PostgreSQL מ�
     await cron(new Date("2027-05-20T05:00:00Z"));
     assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ENDED");
     assert.equal((await chargesOf(shiftId)).length, 3);
-  });
-
-  test("תשלום ידני אחרי כישלון חיוב אוטומטי: מנקה את תקופת החסד ומסמן שולם; חיוב במצב לא ידוע אינו מסומן כך", async () => {
-    const shiftId = await createOk();
-    await withCharge(declineCharges, () => cron(MARCH_15));
-    const failed = await chargeOf(shiftId, "2027-03");
-    assert.equal(failed.status, "FAILED");
-    assert.ok(failed.graceUntil);
-    await life.recordManualPayment({ chargeId: failed.id, adminId: ids.admin, amountAgorot: MONTHLY, paidOn: "2027-03-16", confirm: true, now: new Date("2027-03-16T09:00:00Z") });
-    const settled = await chargeOf(shiftId, "2027-03");
-    assert.deepEqual([settled.status, settled.graceUntil, settled.failureCode], ["PAID", null, null]);
-    // ריצה אחרי תום החסד אינה משעה (החוב הוסדר)
-    await cron(new Date(MARCH_15.getTime() + 8 * DAY));
-    assert.equal((await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } })).status, "ACTIVE");
-
-    const b = await createOk(ids.b, { roomKey: "ROOM4" });
-    await withCharge(async () => { throw new Error("timeout"); }, () => cron(MARCH_15));
-    const unknown = await chargeOf(b, "2027-03");
-    assert.equal(unknown.status, "UNKNOWN");
-    await assert.rejects(() => life.recordManualPayment({ chargeId: unknown.id, adminId: ids.admin, amountAgorot: MONTHLY, paidOn: "2027-03-16", confirm: true, now: new Date("2027-03-16T09:00:00Z") }), { code: "CONFLICT" });
   });
 
   test("הזמנה מתוך התאריך הקרוב: לקוח אינו יכול לבטל בעצמו (אין נתיב ביטול ללקוח), והיעדרות אינה משנה חיוב", async () => {

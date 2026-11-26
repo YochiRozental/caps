@@ -13,8 +13,6 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "demo": "node scripts/demo/start.mjs",
-    "demo:reset": "node scripts/demo/start.mjs --reset",
     "ivr": "tsx src/ivr/server.ts",
     "ivr:dev": "tsx watch src/ivr/server.ts",
     "ivr:migrate-legacy-pins": "tsx scripts/migrate-legacy-ivr-pins.ts"

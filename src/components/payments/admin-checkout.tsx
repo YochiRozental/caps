@@ -5,8 +5,6 @@ import { Alert, Icon, Loading, RoomTile, SectionTitle } from "@/components/ui";
 import {
   InfoRow,
   PaymentStatusBadge,
-  SandboxNotice,
-  SandboxPanel,
   TrialDiscountBreakdown,
 } from "@/components/payments/bits";
 import {
@@ -17,7 +15,6 @@ import {
   shekel,
   timeText,
   useHoldCountdown,
-  usePaymentsGate,
   useSingleFlight,
 } from "@/lib/payments/client";
 import type { HoldDetails } from "@/lib/payments/views";
@@ -101,7 +98,6 @@ export function AdminCheckout({
   /** נקרא אחרי שההחזקה שוחררה/בוטלה בהצלחה */
   onCancelled: () => void;
 }) {
-  const gate = usePaymentsGate();
   const [details, setDetails] = useState<HoldDetails | null>(null);
   const [missing, setMissing] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -326,8 +322,6 @@ export function AdminCheckout({
         תשלום להשלמת ההזמנה
       </SectionTitle>
 
-      {gate.sandbox && <SandboxNotice />}
-
       <div
         className={`flex items-center justify-between gap-4 rounded-2xl px-5 py-4 ring-1 ${
           urgent
@@ -417,12 +411,6 @@ export function AdminCheckout({
             <InfoRow label="סכום לתשלום">
               {shekel(pending.amountAgorot)}
             </InfoRow>
-          )}
-          {gate.sandbox && pending.providerPaymentId && (
-            <SandboxPanel
-              providerPaymentId={pending.providerPaymentId}
-              onDone={() => void verifyPayment(pending.id)}
-            />
           )}
           <button
             type="button"

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { prisma as defaultDb } from "@/lib/prisma";
 import { InMemoryMockStore, PrismaMockStore, type MockStore } from "@/lib/payments/mock-store";
@@ -6,8 +5,6 @@ import {
   PaymentError,
   PaymentStateError,
   WebhookVerificationError,
-  type ChargeResult,
-  type ChargeSavedMethodInput,
   type CreatePaymentRequestInput,
   type PaymentEnvironment,
   type PaymentProvider,
@@ -16,7 +13,6 @@ import {
   type ProviderPaymentStatus,
   type RefundInput,
   type RefundResult,
-  type SavedPaymentMethod,
   type VerifiedPaymentStatus,
   type WebhookInput,
 } from "@/lib/payments/provider";
@@ -37,8 +33,7 @@ import {
  *   approveTransaction (שלב נדרש בתיעוד, לעולם לא לחיובי טוקן, ומדולג באופן אידמפוטנטי על כפילות) -> אימות סטטוס
  *   מהשרת (getPaymentStatus, דרך getPaymentProcessInfo).
  *
- * חיוב טוקן (3 חיובי משמרת, chargeSavedMethod): קריאה סינכרונית ל-createTransactionWithToken. אין webhook
- * ואין approveTransaction (התיעוד לא מתאר approveTransaction עבור חיובי טוקן, ולפי ההנחיה אין לבצעו שם).
+ * אין שמירת כרטיס ואין חיוב טוקן: saveCardToken נשלח תמיד 0, וטוקן שמוחזר (אם בכלל) לעולם לא נקרא או נשמר.
  */
 
 // ───────────────────────────── קודי סטטוס (parameter-mapping, מאומת) ─────────────────────────────
@@ -57,8 +52,9 @@ function statusCodeOf(t: Record<string, unknown> | undefined): string {
 
 // ───────────────────────────── קידוד מזהה הספק שלנו (providerPaymentId) ─────────────────────────────
 // הממשק הקיים מגדיר providerPaymentId כמחרוזת אחת, אבל Grow מזהה תהליך/עסקה בזוג (מזהה+טוקן). מקודדים את
-// השניים למחרוזת אחת, שקופה ללוגיקה העסקית (שם ולעולם לא מפרקת אותה - נבדק בקוד הקיים). "prc" נושא גם דגל הסכמה
-// לשמירת כרטיס (מה שבאמת התבקש ב-createPaymentRequest), כדי ש-getPaymentStatus לעולם לא יחשוף טוקן בלי הסכמה.
+// השניים למחרוזת אחת, שקופה ללוגיקה העסקית (שם ולעולם לא מפרקת אותה - נבדק בקוד הקיים). ל-"prc" חלק חמישי קבוע "0"
+// (היסטורי: דגל שמירת כרטיס, שאינה קיימת עוד), כדי שמזהים שכבר נשמרו במסד ימשיכו להתפענח. "tx"/"fail" נשארים לפענוח
+// מזהים ישנים בלבד.
 type GrowRefKind = "prc" | "tx" | "fail";
 
 function encodeRef(kind: GrowRefKind, id: string, token: string, extra?: string): string {
@@ -101,15 +97,6 @@ export function shekelsToAgorot(sum: unknown): number {
   return Math.round(n * 100);
 }
 
-// ───────────────────────────── מזהה ייחודי מספרי לכל בקשה (transactionUniqueIdentifier) ─────────────────────────────
-// Grow דורש מזהה *מספרי* למניעת כפילות (תיעוד: createTransactionWithToken, getTokenTransactionsByExternalIdentifiers),
-// בזמן שמפתחות ה-idempotency שלנו הם מחרוזות (לדוגמה "shiftcharge:abc:2026-02:a1"). הגזירה כאן היא קביעה שלנו
-// (לא מתועדת ב-Grow): hash דטרמיניסטי ל-9 ספרות, כך שאותו מפתח idempotency מניב תמיד את אותו מזהה אצל Grow.
-export function deriveUniqueIdentifier(idempotencyKey: string): number {
-  const hex = createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 12);
-  return Number(BigInt(`0x${hex}`) % BigInt(1_000_000_000));
-}
-
 // ───────────────────────────── עזרי תשובה: המעטפת {status, err, data} ─────────────────────────────
 
 interface GrowEnvelope {
@@ -136,12 +123,6 @@ function pickString(obj: unknown, keys: string[]): string | undefined {
     if (typeof v === "number") return String(v);
   }
   return undefined;
-}
-
-/** MMYY (כפי שמתואר בדוגמאות cardExp) -> MM/YY. אם לא במבנה הצפוי מוחזר undefined (לעולם לא מומצא) */
-function formatExpiry(cardExp: string | undefined): string | undefined {
-  if (!cardExp || !/^\d{4}$/.test(cardExp)) return undefined;
-  return `${cardExp.slice(0, 2)}/${cardExp.slice(2)}`;
 }
 
 /** paymentDate בפורמט DD/MM/YY (כפי שבדוגמאות approve-transaction/getTransactionInfo) מול תאריך השרת, כמחרוזת בלבד */
@@ -262,7 +243,8 @@ export class GrowPaymentProvider implements PaymentProvider {
 
   async createPaymentRequest(input: CreatePaymentRequestInput): Promise<PaymentRequestResult> {
     assertPositiveAmount(input.amountAgorot);
-    const fingerprint = JSON.stringify([input.amountAgorot, input.currency, input.customerRef, !!input.savePaymentMethod]);
+    // false: מיקום היסטורי (דגל שמירת כרטיס) נשמר כדי שטביעות שכבר שמורות ב-store ימשיכו להתאים
+    const fingerprint = JSON.stringify([input.amountAgorot, input.currency, input.customerRef, false]);
     const idemKey = `grow-create:${input.idempotencyKey}`;
 
     // פער מאומת: createPaymentProcess (בניגוד ל-createTransactionWithToken) לא מתועד עם פרמטר idempotency כלשהו,
@@ -299,7 +281,8 @@ export class GrowPaymentProvider implements PaymentProvider {
       "pageField[fullName]": customer.fullName,
       "pageField[phone]": customer.phone,
       "pageField[email]": customer.email,
-      saveCardToken: input.savePaymentMethod ? 1 : 0,
+      // לעולם לא שומרים כרטיס אצל Grow: אין במערכת כרטיס שמור או חיוב טוקן
+      saveCardToken: 0,
       notifyUrl: this.cfg.notifyUrl,
       cField1: input.idempotencyKey,
     });
@@ -319,9 +302,9 @@ export class GrowPaymentProvider implements PaymentProvider {
     }
 
     // processId/processToken: מידע פנימי בין השרת שלנו ל-Grow (regular-payment-response: "must not be shown to
-    // the paying customer") - מקודדים יחד עם דגל הסכמת שמירת הכרטיס, כדי ש-getPaymentStatus יאכוף אותו בעצמו.
+    // the paying customer")
     return {
-      providerPaymentId: encodeRef("prc", processId, processToken, input.savePaymentMethod ? "1" : "0"),
+      providerPaymentId: encodeRef("prc", processId, processToken, "0"),
       status: "PENDING",
       checkoutUrl,
     };
@@ -368,8 +351,7 @@ export class GrowPaymentProvider implements PaymentProvider {
       const chargeEntries = transactions.filter((t) => CHARGE_STATUS_CODES.has(statusCodeOf(t)));
       if (chargeEntries.length === 0) return { providerPaymentId, status: "PENDING", amountAgorot: 0, refundedAgorot: 0 };
       const chosen = chargeEntries.find((t) => statusCodeOf(t) === STATUS_PAID) ?? chargeEntries[chargeEntries.length - 1];
-      const consentToSave = ref.extra === "1";
-      const base = this.toVerifiedStatus(providerPaymentId, chosen, consentToSave);
+      const base = this.toVerifiedStatus(providerPaymentId, chosen);
       const refundedFromEntries = transactions
         .filter((t) => statusCodeOf(t) === STATUS_REFUND_ENTRY)
         .reduce((sum, r) => sum + shekelsToAgorot(r.sum), 0);
@@ -379,10 +361,10 @@ export class GrowPaymentProvider implements PaymentProvider {
     // ref.kind === "tx"
     const resp = await this.call("getTransactionInfo", { pageCode: this.cfg.pageCode, transactionId: ref.id, transactionToken: ref.token });
     if (!envelopeOk(resp)) throw new PaymentError(`Grow: בדיקת מצב עסקה נכשלה (${envelopeErrorMessage(resp)})`);
-    return this.toVerifiedStatus(providerPaymentId, resp.data as Record<string, unknown> | undefined, false);
+    return this.toVerifiedStatus(providerPaymentId, resp.data as Record<string, unknown> | undefined);
   }
 
-  private toVerifiedStatus(providerPaymentId: string, d: Record<string, unknown> | undefined, consentToSave: boolean): VerifiedPaymentStatus {
+  private toVerifiedStatus(providerPaymentId: string, d: Record<string, unknown> | undefined): VerifiedPaymentStatus {
     // מאומת (parameter-mapping): 0=לא שולם, 2=שולם, 4=בוטלה לפני שידור, 9=עסקה נדחתה. כל קוד אחר (לא מוכר) נשאר
     // PENDING בכוונה - חוסר ודאות לעולם לא מתפרש כהצלחה.
     const code = statusCodeOf(d);
@@ -395,15 +377,10 @@ export class GrowPaymentProvider implements PaymentProvider {
             ? "CANCELLED"
             : "PENDING";
     const amountAgorot = shekelsToAgorot(d?.sum);
-    // טוקן נחשף רק מעסקה ששולמה בפועל (לעולם לא מ-PENDING/DENIED) וכשההסכמה לשמירה ניתנה ביצירת הבקשה
-    const cardToken = status === "SUCCEEDED" && consentToSave ? pickString(d, ["cardToken"]) : undefined;
-    const savedPaymentMethod: SavedPaymentMethod | undefined = cardToken
-      ? { token: cardToken, last4: pickString(d, ["cardSuffix"]), brand: pickString(d, ["cardBrand"]), expiry: formatExpiry(pickString(d, ["cardExp"])) }
-      : undefined;
     // לא מאומת: ל-getTransactionInfo (ללא מערך transactions) אין שדה "סכום שהוחזר" מתועד. refundedTransactionId רק
     // מצביע שבוצע החזר כלשהו; מניחים החזר מלא כקירוב שמרני-יתר. (ה-branch "prc" מחשב סכום מדויק ממערך העסקאות).
     const refundedAgorot = d?.refundedTransactionId ? amountAgorot : 0;
-    return { providerPaymentId, status, amountAgorot, refundedAgorot, savedPaymentMethod };
+    return { providerPaymentId, status, amountAgorot, refundedAgorot };
   }
 
   async cancelPayment(providerPaymentId: string): Promise<void> {
@@ -476,75 +453,6 @@ export class GrowPaymentProvider implements PaymentProvider {
       status: "SUCCEEDED",
       amountAgorot,
     };
-  }
-
-  async chargeSavedMethod(input: ChargeSavedMethodInput): Promise<ChargeResult> {
-    assertPositiveAmount(input.amountAgorot);
-    const customer = await this.resolveCustomer(input.customerRef);
-    const uniqueId = deriveUniqueIdentifier(input.idempotencyKey);
-
-    // בדיקה מקדימה אצל Grow: אם ניסיון קודם עם אותו מזהה ייחודי כבר התבצע (למשל כשל רשת אצלנו אחרי שהחיוב כבר
-    // הגיע ל-Grow), Grow דוחה מזהה חזור כשגיאה ולא מחזיר את התוצאה המקורית (מאומת בתיעוד ה-changelog) - אז בודקים
-    // ראשית כדי למנוע גם את השגיאה וגם חיוב כפול.
-    const prior = await this.lookupTokenChargeByUniqueIdentifier(input.token, uniqueId);
-    if (prior) return prior;
-
-    const resp = await this.call("createTransactionWithToken", {
-      cardToken: input.token,
-      userId: this.cfg.userId,
-      sum: agorotToShekels(input.amountAgorot),
-      description: input.description,
-      paymentType: 2, // "רגיל": כל חיוב (משמרת/הזמנה) הוא עסקה עצמאית, לא הוראת קבע מנוהלת ע"י Grow
-      "pageField[fullName]": customer.fullName,
-      "pageField[phone]": customer.phone,
-      transactionUniqueIdentifier: uniqueId,
-    });
-
-    if (!envelopeOk(resp)) {
-      const failureCode = envelopeErrorMessage(resp);
-      // תשובת שגיאה חד-משמעית מ-Grow (status=0+err) - כישלון ודאי, לא UNKNOWN. אין מזהה עסקה אצל Grow לשמור
-      return { providerPaymentId: encodeRef("fail", uniqueId.toString(), failureCode), status: "FAILED", failureCode };
-    }
-    const data = resp.data;
-    const transactionId = pickString(data, ["transactionId"]);
-    const transactionToken = pickString(data, ["transactionToken"]);
-    if (!transactionId || !transactionToken) {
-      // מאומת (token-transactions-response): תשובת הצלחה כוללת תמיד transactionId/transactionToken - אם הם חסרים
-      // בכל זאת, לא מניחים הצלחה ולא ממציאים מזהה
-      throw new PaymentError("תשובת Grow ל-createTransactionWithToken לא כללה מזהה עסקה אף ש-status=1");
-    }
-    // מאומת (token-transactions-response): הצלחה תמיד מגיעה עם statusCode=2 ("שולם"). אם statusCode קיים ושונה
-    // מזה (סתירה בין status=1 לרמת המעטפת לבין statusCode ברמת הנתונים) - לא מאשרים אוטומטית, נדרש בירור.
-    const code = statusCodeOf(data as Record<string, unknown>);
-    if (code && code !== STATUS_PAID) {
-      throw new PaymentError(`Grow: status=1 אך statusCode=${code} (לא "שולם") - מצב לא עקבי, נדרש בירור ולא הצלחה אוטומטית`);
-    }
-    return { providerPaymentId: encodeRef("tx", transactionId, transactionToken), status: "SUCCEEDED" };
-  }
-
-  /** עוזר לבירור חיובים במצב לא ידוע ולמניעת חיוב כפול (לא חלק מחוזה PaymentProvider; לשימוש עתידי/בירור ידני) */
-  async lookupTokenChargeByUniqueIdentifier(cardToken: string, uniqueId: number): Promise<ChargeResult | null> {
-    const resp = await this.call("getTokenTransactionsByExternalIdentifiers", {
-      userId: this.cfg.userId,
-      cardToken,
-      transactionUniqueIdentifier: uniqueId,
-    }).catch(() => undefined);
-    if (!resp || !envelopeOk(resp)) return null;
-    // מבנה התשובה לא מתועד; מתמודדים גם עם data כאובייקט עסקה בודד וגם עם data.transactions[] כמו בשאר הנקודות
-    const data = resp.data as { transactions?: unknown[] } | Record<string, unknown> | undefined;
-    const candidate = Array.isArray((data as { transactions?: unknown[] })?.transactions)
-      ? (data as { transactions: Record<string, unknown>[] }).transactions[0]
-      : (data as Record<string, unknown> | undefined);
-    const transactionId = pickString(candidate, ["transactionId"]);
-    const transactionToken = pickString(candidate, ["transactionToken"]);
-    if (!transactionId || !transactionToken) return null;
-    const status: ProviderPaymentStatus = statusCodeOf(candidate) === STATUS_PAID ? "SUCCEEDED" : "PENDING";
-    return { providerPaymentId: encodeRef("tx", transactionId, transactionToken), status };
-  }
-
-  async isPaymentMethodUsable(_token: string): Promise<boolean> {
-    // Grow לא מתעד API לבדיקת תקינות טוקן בלי חיוב בפועל - שמישות מתגלה רק בניסיון חיוב (ChargeResult.status)
-    return true;
   }
 
   async parseWebhook(input: WebhookInput): Promise<PaymentWebhookEvent> {

@@ -18,7 +18,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       provider,
       useBalance: body?.useBalance !== false,
     });
-    return NextResponse.json(withoutProviderInternals(started, provider));
+    return NextResponse.json(withoutProviderInternals(started));
   } catch (err) {
     return errorResponse(err);
   }

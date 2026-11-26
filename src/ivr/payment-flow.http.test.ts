@@ -1,10 +1,16 @@
-import { after, before, beforeEach, describe, test } from "node:test";
+import { after, before, beforeEach, describe, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import type { PrismaClient } from "@/generated/prisma/client";
+import type { PaymentProvider } from "@/lib/payments/provider";
 import type { Method, RunningApp } from "@/ivr/test-harness";
 
-// בדיקות מקצה לקצה של הזמנה ותשלום בטלפון: נתב ימות המשיח האמיתי, מטפלי השיחה האמיתיים, שירותי שלבים C+D+F.2, ספק
-// Mock על PostgreSQL מקומי ייעודי, בבקשות HTTP אמיתיות. רצות רק כש-IVRPAY_TEST_DATABASE_URL מוגדר ומצביע על מסד מקומי
+// ספק הבדיקות אינו זמין לאתר (אין PAYMENT_PROVIDER=mock): מזריקים אותו במקום ספק הזמן-ריצה, רק בתהליך הבדיקה.
+// null = אין ספק תקף (כמו סביבה בלי PAYMENT_PROVIDER)
+let testProvider: PaymentProvider | null = null;
+mock.module("@/lib/payments/runtime", { namedExports: { getRuntimeProvider: () => testProvider } });
+
+// בדיקות מקצה לקצה של הזמנה בטלפון מיתרת שעות: נתב ימות המשיח האמיתי, מטפלי השיחה האמיתיים, שירותי שלבים C+D+F.2, ספק
+// הבדיקות על PostgreSQL מקומי ייעודי, בבקשות HTTP אמיתיות. רצות רק כש-IVRPAY_TEST_DATABASE_URL מוגדר ומצביע על מסד מקומי
 // בשם *_test. דוגמה:
 //   IVRPAY_TEST_DATABASE_URL=postgresql://user:pass@localhost:5433/clinics_ivrpay_test npm test
 const testUrl = process.env.IVRPAY_TEST_DATABASE_URL;
@@ -34,10 +40,6 @@ const PHONES = {
 const DAY = 24 * 3600_000;
 
 const ENV_KEYS = [
-  "PAYMENT_PROVIDER",
-  "PAYMENT_ENVIRONMENT",
-  "PAYMENT_MOCK_ENABLED",
-  "PAYMENT_WEBHOOK_SECRET",
   "IVR_PAYMENTS_ENABLED",
   "IVR_PAYMENT_STEP_TIMEOUT_MS",
 ] as const;
@@ -49,9 +51,7 @@ describe(
     let prisma: PrismaClient;
     let app: RunningApp;
     let h: typeof import("@/ivr/test-harness");
-    let methods: typeof import("@/lib/payments/saved-methods");
-    let runtime: typeof import("@/lib/payments/runtime");
-    let MockPaymentProvider: typeof import("@/lib/payments/mock-provider").MockPaymentProvider;
+    let MockPaymentProvider: typeof import("@/lib/payments/testing/mock-provider").MockPaymentProvider;
     let mondayLocal: Date;
     const ids: Record<string, string> = {};
     const savedEnv: Record<string, string | undefined> = {};
@@ -71,8 +71,6 @@ describe(
     ];
     const ddmm = (d: Date) =>
       `${String(d.getDate()).padStart(2, "0")}${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const provider = () =>
-      runtime.getRuntimeProvider() as InstanceType<typeof MockPaymentProvider>;
 
     /** שיחה אחת כמו ימות המשיח: קלטים מצטברים, ואפשרות לשלוח כל הקשה בשיטה/פרמטרים אחרים */
     class Session {
@@ -156,7 +154,6 @@ describe(
       await prisma.paymentAttempt.deleteMany({});
       await prisma.hoursPackage.deleteMany({});
       await prisma.payment.deleteMany({});
-      await prisma.paymentMethod.deleteMany({});
       await prisma.debtSettlement.deleteMany({});
       await prisma.debt.deleteMany({});
       await prisma.webhookEvent.deleteMany({});
@@ -184,14 +181,6 @@ describe(
           _sum: { minutesRemaining: true },
         })
       )._sum.minutesRemaining ?? 0;
-    const addCard = async (userId: string) => {
-      const res = await methods.addMockCard({
-        userId,
-        currentPassword: SITE_PASSWORD,
-        provider: provider(),
-      });
-      assert.equal(res.status, "OK");
-    };
     const counts = async () => ({
       confirmed: await prisma.appointment.count({
         where: { status: "CONFIRMED" },
@@ -221,18 +210,14 @@ describe(
       assertLocalTestDatabase(testUrl!);
       for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
       process.env.DATABASE_URL = testUrl;
-      process.env.PAYMENT_PROVIDER = "mock";
-      process.env.PAYMENT_ENVIRONMENT = "sandbox";
-      process.env.PAYMENT_MOCK_ENABLED = "true";
-      process.env.PAYMENT_WEBHOOK_SECRET = "ivr-pay-test-webhook-secret-01234";
       process.env.IVR_PAYMENTS_ENABLED = "true";
       delete process.env.IVR_PAYMENT_STEP_TIMEOUT_MS;
 
       h = await import("@/ivr/test-harness");
       ({ prisma } = await import("@/lib/prisma"));
-      methods = await import("@/lib/payments/saved-methods");
-      runtime = await import("@/lib/payments/runtime");
-      ({ MockPaymentProvider } = await import("@/lib/payments/mock-provider"));
+      ({ MockPaymentProvider } = await import("@/lib/payments/testing/mock-provider"));
+      const { PrismaMockStore } = await import("@/lib/payments/mock-store");
+      testProvider = new MockPaymentProvider("ivr-pay-test-webhook-secret-01234", new PrismaMockStore(prisma));
       const { hashPassword } = await import("@/lib/password");
       const { createIvrApp } = await import("@/ivr/app");
       const flow = await import("@/ivr/booking-flow");
@@ -366,71 +351,16 @@ describe(
       );
     });
 
-    test("הזמנה מלאה מכרטיס Mock שמור: חיוב יחיד, Payment עם האמצעי, ואישור", async () => {
-      await addCard(ids.u1);
-      const s = new Session(PHONES.u1);
-      const menu = await s.toMenu();
-      assert.match(menu, /סביבת בדיקות/);
-      assert.match(menu, /יחויבו 75 שקלים בכרטיס השמור המסתיים ב 4 2 4 2/);
-      assert.match(await s.answer("1"), /הקוד הטלפוני/);
-      assert.match(await s.answer(PIN), /חויבו 75 שקלים/);
-
-      const c = await counts();
-      assert.deepEqual(
-        [c.confirmed, c.holds, c.payments, c.succeeded, c.providerPays],
-        [1, 0, 1, 1, 1],
-      );
-      const pay = await prisma.payment.findFirstOrThrow({});
-      assert.deepEqual(
-        [pay.amountAgorot, pay.environment, pay.provider, pay.purpose],
-        [7500, "SANDBOX", "mock", "BOOKING"],
-      );
-      assert.ok(pay.paymentMethodId);
-      const appt = await prisma.appointment.findFirstOrThrow({});
-      assert.deepEqual(
-        [
-          appt.status,
-          appt.paymentStatus,
-          appt.paidCashAgorot,
-          appt.paidFromBalanceMinutes,
-        ],
-        ["CONFIRMED", "PAID", 7500, 0],
-      );
-    });
-
-    test("תשלום משולב: ההפרש מוצג, הקוד נדרש, חיוב Mock של 37.5 ₪ וניכוי 30 דקות באישור", async () => {
-      await addCard(ids.u1);
-      await seedPackage(ids.u1, 30);
-      const s = new Session(PHONES.u1);
-      const menu = await s.toMenu();
-      assert.match(menu, /ינוצלו 30 דקות מהיתרה ויחויבו 37 שקלים ו50 אגורות/);
-      assert.equal(await remaining(ids.u1), 30);
-      await s.answer("1");
-      const final = await s.answer(PIN);
-      assert.match(final, /חויבו 37 שקלים ו50 אגורות/);
-      assert.match(final, /נוצלו 30 דקות מהיתרה/);
-      const appt = await prisma.appointment.findFirstOrThrow({});
-      assert.deepEqual(
-        [appt.status, appt.paidFromBalanceMinutes, appt.paidCashAgorot],
-        ["CONFIRMED", 30, 3750],
-      );
-      assert.equal(await remaining(ids.u1), 0);
-      assert.equal(
-        (await prisma.payment.findFirstOrThrow({})).packageMinutes,
-        30,
-      );
-    });
-
     // ───────────── חסימות ──────────────
 
-    test("לקוח ללא כרטיס שמור וללא יתרה מספקת: מופנה לאתר, ללא אישור, חוב או חיוב, וההחזקה משוחררת", async () => {
+    test("לקוח ללא יתרה מספקת: מופנה לאתר (אין חיוב בכסף בטלפון), ללא אישור, חוב או חיוב, וההחזקה משוחררת", async () => {
       for (const minutes of [0, 30]) {
         await wipe();
         if (minutes) await seedPackage(ids.u1, minutes);
         const s = new Session(PHONES.u1);
         await s.toMenu().catch(() => undefined);
-        assert.match(s.last, /אין כרטיס שמור/, `יתרה ${minutes}`);
-        assert.match(s.last, /אזור האישי באתר/);
+        assert.match(s.last, /אין לך יתרת שעות מספיקה/, `יתרה ${minutes}`);
+        assert.match(s.last, /היכנסו לאתר/);
         const c = await counts();
         assert.deepEqual(
           [c.confirmed, c.holds, c.payments, c.debts, c.auths, c.providerPays],
@@ -438,16 +368,6 @@ describe(
           `יתרה ${minutes}`,
         );
       }
-    });
-
-    test("כרטיס שנדחה אצל הספק אינו מוצע: כמו לקוח בלי כרטיס", async () => {
-      await addCard(ids.u1);
-      const row = await prisma.paymentMethod.findFirstOrThrow({});
-      await provider().declineToken(row.token);
-      const s = new Session(PHONES.u1);
-      await s.toMenu().catch(() => undefined);
-      assert.match(s.last, /אין כרטיס שמור/);
-      assert.deepEqual((await counts()).confirmed, 0);
     });
 
     test("לקוח ללא קוד טלפוני: לא ניתן לאשר פעולה כספית, ההחזקה משוחררת", async () => {
@@ -651,12 +571,12 @@ describe(
 
     // ───────────── כפילויות ומקביליות ─────────────
 
-    test("בקשה חוזרת אחרי חיוב מוצלח (אותה שיחה, אותו קלט): אין חיוב כפול ואין הזמנה כפולה", async () => {
-      await addCard(ids.u1);
+    test("בקשה חוזרת אחרי אישור מיתרה (אותה שיחה, אותו קלט): אין ניכוי כפול ואין הזמנה כפולה", async () => {
+      await seedPackage(ids.u1, 300);
       const s = new Session(PHONES.u1);
       await s.toPinPrompt();
       assert.match(await s.answer(PIN), /ההזמנה אושרה/);
-      assert.equal((await counts()).providerPays, 1);
+      assert.equal(await remaining(ids.u1), 240);
 
       // הלקוח (או הרשת) שולח שוב את אותה בקשה/אותה שיחה מההתחלה, עם אותו קוד
       const again = new Session(PHONES.u1, "POST", s.callId);
@@ -664,9 +584,10 @@ describe(
       assert.match(again.last, /תפוס/, "החדר כבר תפוס על ידי ההזמנה שאושרה");
       const c = await counts();
       assert.deepEqual(
-        [c.confirmed, c.payments, c.succeeded, c.providerPays, c.holds],
-        [1, 1, 1, 1, 0],
+        [c.confirmed, c.payments, c.providerPays, c.holds],
+        [1, 0, 0, 0],
       );
+      assert.equal(await remaining(ids.u1), 240, "לא נוכה שוב");
     });
 
     test("שתי שיחות מקבילות לאותו חדר ושעה: החזקה אחת מנצחת, אחת מאושרת בלבד, השנייה מקבלת 'תפוס'", async () => {
@@ -711,7 +632,7 @@ describe(
       assert.deepEqual([c.confirmed, c.holds, c.payments], [1, 0, 0]);
     });
 
-    test("שינוי יתרה במהלך השיחה: אזלה לפני הקוד, או הקטנה של תשלום משולב: אין ניכוי, אין חיוב", async () => {
+    test("שינוי יתרה במהלך השיחה: אזלה לפני הקוד: אין ניכוי, אין חיוב", async () => {
       await seedPackage(ids.u1, 60);
       const s = new Session(PHONES.u1);
       await s.toPinPrompt();
@@ -725,92 +646,20 @@ describe(
         [0, 0],
       );
 
-      await wipe();
-      await addCard(ids.u1);
-      await seedPackage(ids.u1, 30);
-      const t = new Session(PHONES.u1);
-      await t.toPinPrompt({ hhmm: "1300" });
-      await prisma.hoursPackage.updateMany({
-        where: { userId: ids.u1 },
-        data: { minutesRemaining: 0 },
-      });
-      assert.match(await t.answer(PIN), /סכום התשלום השתנה/);
       const c = await counts();
-      assert.deepEqual(
-        [c.confirmed, c.payments, c.providerPays, c.holds],
-        [0, 0, 0, 0],
-        "לא חויב ולא אושר",
-      );
+      assert.deepEqual([c.payments, c.providerPays], [0, 0], "לא חויב");
     });
 
     // ───────────── כשלי ספק ─────────────
 
-    test("הספק מחזיר כישלון חיוב: הזמנה לא מאושרת, אין ניכוי, אין חיוב, ההחזקה משוחררת", async () => {
-      await addCard(ids.u1);
-      await seedPackage(ids.u1, 30);
-      const orig = MockPaymentProvider.prototype.chargeSavedMethod;
-      MockPaymentProvider.prototype.chargeSavedMethod = async function (
-        this: InstanceType<typeof MockPaymentProvider>,
-        input,
-      ) {
-        const t = await this.issueSandboxToken();
-        await this.declineToken(t.token);
-        return orig.call(this, { ...input, token: t.token });
-      };
-      try {
-        const s = new Session(PHONES.u1);
-        await s.toPinPrompt();
-        assert.match(await s.answer(PIN), /החיוב נכשל/);
-      } finally {
-        MockPaymentProvider.prototype.chargeSavedMethod = orig;
-      }
-      const c = await counts();
-      assert.deepEqual([c.confirmed, c.holds, c.succeeded], [0, 0, 0]);
-      assert.equal(await remaining(ids.u1), 30);
-      assert.equal(
-        (await prisma.payment.findFirstOrThrow({})).status,
-        "FAILED",
-      );
-    });
-
-    test("תקלת רשת בספק בזמן חיוב: הודעת תקלה, ללא אישור, ללא ניסיון אוטומטי נוסף", async () => {
-      await addCard(ids.u1);
-      const orig = MockPaymentProvider.prototype.chargeSavedMethod;
-      let calls = 0;
-      MockPaymentProvider.prototype.chargeSavedMethod = async () => {
-        calls++;
-        throw new Error("network down 0501110031");
-      };
-      let output = "";
-      try {
-        const s = new Session(PHONES.u1);
-        await s.toPinPrompt();
-        const captured = await h.captureConsole(() => s.answer(PIN));
-        output = captured.output;
-        assert.match(captured.result, /אירעה תקלה בחיוב/);
-      } finally {
-        MockPaymentProvider.prototype.chargeSavedMethod = orig;
-      }
-      assert.equal(calls, 1);
-      const c = await counts();
-      assert.deepEqual([c.confirmed, c.succeeded, c.holds], [0, 0, 0]);
-      assert.equal(
-        (await prisma.payment.findFirstOrThrow({})).failureCode,
-        "provider_error",
-      );
-      assert.ok(
-        !output.includes("0501110031") && !output.includes("network down"),
-        "הודעת השגיאה לא נרשמה",
-      );
-    });
-
     // ───────────── תאימות ולוגים ─────────────
 
     test("שער סגור: ה-IVR פועל בדיוק כמו קודם (אישור מיד אחרי 'לאישור הקישו 1', בלי החזקה, קוד או תשלום)", async () => {
+      const savedProvider = testProvider;
       for (const mode of ["flag-off", "no-provider"] as const) {
         await wipe();
         if (mode === "flag-off") delete process.env.IVR_PAYMENTS_ENABLED;
-        else delete process.env.PAYMENT_PROVIDER;
+        else testProvider = null;
         try {
           await seedPackage(ids.u1, 300);
           const s = new Session(PHONES.u1);
@@ -833,7 +682,7 @@ describe(
           assert.equal(await remaining(ids.u1), 300, `${mode}: היתרה לא נגעה`);
         } finally {
           process.env.IVR_PAYMENTS_ENABLED = "true";
-          process.env.PAYMENT_PROVIDER = "mock";
+          testProvider = savedProvider;
         }
       }
     });
@@ -921,15 +770,14 @@ describe(
       await prisma.user.delete({ where: { id: user.id } });
     });
 
-    test("הקוד, הטוקן והטלפון אינם מופיעים בלוגים בזרימות מוצלחות, שגויות וחסומות", async () => {
-      await addCard(ids.u1);
-      const token = (await prisma.paymentMethod.findFirstOrThrow({})).token;
+    test("הקוד והטלפון אינם מופיעים בלוגים בזרימות מוצלחות, שגויות וחסומות", async () => {
+      await seedPackage(ids.u1, 300);
       const { output } = await h.captureConsole(async () => {
         const ok = new Session(PHONES.u1);
         await ok.toPinPrompt();
         await ok.answer(PIN);
         await wipe();
-        await addCard(ids.u1);
+        await seedPackage(ids.u1, 300);
         const bad = new Session(PHONES.u1);
         await bad.toPinPrompt({ hhmm: "1300" });
         await bad.answer(WRONG_PIN);
@@ -941,8 +789,6 @@ describe(
       for (const secret of [
         PIN,
         WRONG_PIN,
-        token,
-        "mock_tok",
         PHONES.u1.slice(1),
         SITE_PASSWORD,
         IVR_SECRET,

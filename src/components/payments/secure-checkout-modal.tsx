@@ -36,7 +36,6 @@ export interface CheckoutModalProps {
   error?: string | null;
   /** הודעת המתנה/ביטול שהגיעה מההורה */
   returnHint?: ReturnHint;
-  sandbox?: boolean;
   onStart: () => void;
   onClose: () => void;
   /** חזרה מדף התשלום (רמז בלבד): ההורה מבקש מהשרת לאמת */
@@ -50,7 +49,7 @@ export interface CheckoutModalProps {
 }
 
 export function SecureCheckoutModal(props: CheckoutModalProps) {
-  const { hours, amountAgorot, phase, checkoutUrl, error, returnHint, sandbox, onStart, onClose, onReturned, onOpenExternal, onReopen, onCheckNow, onFrameLoaded } = props;
+  const { hours, amountAgorot, phase, checkoutUrl, error, returnHint, onStart, onClose, onReturned, onOpenExternal, onReopen, onCheckNow, onFrameLoaded } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const [frameLoaded, setFrameLoaded] = useState(false);
@@ -186,12 +185,6 @@ export function SecureCheckoutModal(props: CheckoutModalProps) {
                   <Icon name="check" className="w-4 h-4 mt-0.5 text-brand-600 shrink-0" />
                   השעות ייטענו לחשבון מיד לאחר קבלת אישור תשלום מאומת.
                 </li>
-                {sandbox && (
-                  <li className="flex gap-2 text-bronze-700">
-                    <Icon name="sparkle" className="w-4 h-4 mt-0.5 shrink-0" />
-                    סביבת בדיקות: לא מתבצע חיוב אמיתי.
-                  </li>
-                )}
               </ul>
               {phase === "creating" && (
                 <div className="flex items-center gap-3 rounded-xl bg-brand-50/60 border border-brand-100 px-4 py-3 text-sm text-brand-800" role="status">

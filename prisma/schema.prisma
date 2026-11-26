@@ -75,10 +75,10 @@ model User {
   phone        String?       @unique
   idNumber     String?       @unique
   gender       Gender?
-  /// לעולם לא נשמרים מספר כרטיס מלא או CVV — רק 4 ספרות אחרונות ותוקף (MM/YY)
-  cardLast4    String?
-  cardExpiry   String?
-  passwordHash String
+  /// אין במערכת פרטי אשראי או כרטיס שמור: פרטי כרטיס מוזנים רק בדף המאובטח של Grow, בכל תשלום מחדש
+  /// null = חשבון שנוצר דרך Google בלבד (אין סיסמת אתר עד שהמשתמש מגדיר אחת). אף מסלול לא מקבל סיסמה מול null
+  passwordHash String?
+  oauthAccounts OAuthAccount[]
   /// קוד זיהוי טלפוני בן 4 ספרות (bcrypt), נפרד לחלוטין מסיסמת האתר. null = לא הוגדר. לעולם לא מוחזר ב-API
   ivrPinHash   String?
   ivrPinUpdatedAt DateTime?
@@ -88,7 +88,6 @@ model User {
   status       UserStatus    @default(PENDING)
   appointments Appointment[]
   payments       Payment[]
-  paymentMethods PaymentMethod[]
   hoursPackages  HoursPackage[]
   credits        Credit[]
   debts          Debt[]
@@ -222,6 +221,8 @@ model Payment {
   appointment       Appointment?       @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
   /// רכישת חבילה (purpose = PACKAGE): כמה שעות נרכשות. המחיר נקבע בשרת מטבלת המחירים
   packageHours      Int?
+  /// רכישת חבילה (purpose = PACKAGE): האם זו כרטיסיית חדר סדנאות
+  packageWorkshop   Boolean            @default(false)
   /// תשלום הזמנה (purpose = BOOKING): כמה דקות מתוכננות לניכוי מיתרה בעת האישור. הסכום בכסף הוא ההפרש בלבד
   packageMinutes    Int                @default(0)
   /// תשלום הזמנה (purpose = BOOKING): כמה מתוך amountAgorot הוא הנחת 25% להזמנה ראשונה שכבר נכלל בסכום (0 = אין הנחה)
@@ -231,8 +232,6 @@ model Payment {
   debtSettlement    DebtSettlement?
   /// חריגות שזוהו באימות (חיוב מרובה, תשלום אחרי ביטול) לטיפול ידני
   anomalies         PaymentAnomaly[]
-  paymentMethodId   String?
-  paymentMethod     PaymentMethod?     @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
   failureCode       String?
   paidAt            DateTime?
   attempts          PaymentAttempt[]
@@ -258,27 +257,6 @@ model PaymentAttempt {
   createdAt DateTime @default(now())
 
   @@index([paymentId, createdAt])
-}
-
-model PaymentMethod {
-  id          String             @id @default(cuid())
-  userId      String
-  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  provider    String
-  environment PaymentEnvironment
-  /// טוקן של הספק בלבד
-  token       String
-  last4       String?
-  brand       String?
-  /// MM/YY
-  expiry      String?
-  active      Boolean            @default(true)
-  payments    Payment[]
-  shifts      Shift[]
-  createdAt   DateTime           @default(now())
-
-  @@unique([provider, token])
-  @@index([userId])
 }
 
 model Refund {
@@ -356,6 +334,8 @@ model HoursPackage {
   user             User           @relation(fields: [userId], references: [id], onDelete: Restrict)
   hours            Int
   pricePaidAgorot  Int
+  /// כרטיסיית חדר סדנאות: מנוצלת רק להזמנות בחדר סדנאות, וכרטיסייה רגילה (false) אינה מנוצלת בו
+  workshop         Boolean        @default(false)
   minutesTotal     Int
   minutesRemaining Int
   purchasedAt      DateTime       @default(now())
@@ -425,6 +405,8 @@ model Credit {
   user                User     @relation(fields: [userId], references: [id], onDelete: Restrict)
   minutesTotal        Int
   minutesRemaining    Int
+  /// זיכוי שמקורו בחדר סדנאות: מנוצל רק בחדר סדנאות (ראו HoursPackage.workshop)
+  workshop            Boolean  @default(false)
   expiresAt           DateTime
   reason              String?
   sourceAppointmentId String?
@@ -592,10 +574,8 @@ model IvrPinEvent {
 }
 
 enum PaymentAuthorizationAction {
-  /// אישור הזמנה מכוסה במלואה מיתרה
+  /// אישור הזמנה מכוסה במלואה מיתרה (בטלפון אין חיוב בכסף: אין כרטיס שמור)
   CONFIRM_BALANCE
-  /// חיוב אמצעי תשלום שמור (כולל תשלום משולב: החלק בכסף בלבד)
-  PAY_CARD
 }
 
 /**
@@ -626,12 +606,6 @@ model PaymentAuthorization {
 // שניים). כל מופע הוא Appointment מאושר (source = SHIFT), ולכן כל מנגנון הזמינות וההתנגשויות הקיים חל עליו כמות שהוא.
 // כל הסכומים באגורות. החיוב החודשי נעשה ע"י ShiftCharge (שורה אחת לכל משמרת ולכל חודש) ובאמצעות Payment.
 
-/// אופן הגבייה של משמרת: AUTO = חיוב אוטומטי באמצעי תשלום שמור; MANUAL = תשלום ידני בתיאום ובאישור מנהל (אין חיוב אוטומטי)
-enum ShiftPaymentMode {
-  AUTO
-  MANUAL
-}
-
 /// שעה חלופית ללקוח כשהקליניקה נסגרה ביוזמת ההנהלה (ללא החזר כספי): ממתינה לתיאום / תואמה / ויתור מפורש
 enum ShiftMakeupStatus {
   OWED
@@ -660,6 +634,8 @@ model ShiftWindow {
   endMinutes         Int
   /// מחיר חודשי כולל מע"מ, באגורות. שקלים שלמים בלבד (מתחלק במדויק ב-4 וב-5 מופעים בחודש)
   monthlyPriceAgorot Int
+  /// מחיר חודשי למשמרת בחדר סדנאות (ברירת מחדל: כפול מהמחיר הרגיל), באגורות. שקלים שלמים בלבד
+  workshopMonthlyPriceAgorot Int
   active             Boolean  @default(true)
   sortOrder          Int      @default(0)
   createdAt          DateTime @default(now())
@@ -676,6 +652,11 @@ model RegularPricing {
   package5Agorot  Int
   package10Agorot Int
   package20Agorot Int
+  /// תמחור חדר סדנאות (ברירת מחדל: כפול מהחדרים הרגילים, ניתן לעריכה ע"י מנהל): שעה בודדת וכרטיסיות 5/10/20
+  workshopHourlyAgorot    Int
+  workshopPackage5Agorot  Int
+  workshopPackage10Agorot Int
+  workshopPackage20Agorot Int
   updatedAt       DateTime @updatedAt
   updatedById     String?
 }
@@ -694,14 +675,10 @@ model Shift {
   startDate      String
   endDate        String
   status         ShiftStatus   @default(PENDING)
-  /// אמצעי התשלום המועדף לחיוב החודשי (חייב להישאר שמיש בכל חיוב)
-  paymentMethodId String?
-  paymentMethod  PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
   /// מחיר מופע ממוצע (חודשי ÷ 4) בעת היצירה. מידע בלבד: החיוב בפועל הוא סכום מחירי המופעים (ShiftOccurrence.priceAgorot)
   occurrencePriceAgorot Int
   /// המחיר החודשי של המשבצת בעת היצירה (תמונת מצב), באגורות. 0 = משמרת ישנה שתומחרה לפי מופע
   monthlyPriceAgorot Int @default(0)
-  paymentMode    ShiftPaymentMode @default(AUTO)
   /// מפתח אידמפוטנטיות ליצירה (לחיצה כפולה/רענון מחזירים את אותה משמרת)
   idempotencyKey String?       @unique
   createdById    String
@@ -890,4 +867,20 @@ model CronRun {
   summary    Json?
 
   @@index([job, startedAt])
+}
+
+/// קישור קבוע בין משתמש לחשבון Google, לפי מזהה sub היציב של Google (ולא לפי אימייל). אילוצי הייחודיות מונעים
+/// קישור אותו חשבון Google ליותר ממשתמש אחד, ויותר מחשבון Google אחד למשתמש, גם בבקשות מקבילות
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  provider          String
+  providerAccountId String
+  /// האימייל כפי שדווח בעת הקישור — לתצוגה בלבד, לעולם לא לזיהוי
+  email             String?
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now())
+
+  @@unique([provider, providerAccountId])
+  @@unique([userId, provider])
 }
