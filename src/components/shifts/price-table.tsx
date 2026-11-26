@@ -13,9 +13,9 @@ export function ShiftPriceTable({ windows }: { windows: ShiftWindowDef[] }) {
             <tr>
               <th>שעות המשמרת</th>
               <th>תדירות</th>
-              <th>מחיר לחודש</th>
+              <th>מחיר לקפסולה</th>
               <th>סה&quot;כ לשלושה חודשים</th>
-              <th>חדר סדנאות (לחודש)</th>
+              <th>מחיר לחדר סדנאות</th>
               <th>תקופה</th>
             </tr>
           </thead>
